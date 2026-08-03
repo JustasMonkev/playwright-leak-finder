@@ -92,9 +92,9 @@ describe("CLI end-to-end", () => {
     return dir;
   }
 
-  async function demoFixture(): Promise<string> {
+  async function leakyFixture(): Promise<string> {
     const dir = await track(await mkdtemp(path.join(repoRoot, "tests", ".tmp-cli-")));
-    await cp(path.join(repoRoot, "demo"), dir, { recursive: true });
+    await cp(path.join(repoRoot, "tests", "fixtures", "leaky-suite"), dir, { recursive: true });
     return dir;
   }
 
@@ -114,8 +114,8 @@ describe("CLI end-to-end", () => {
       () => false,
     );
 
-  it("finds the demo leak in one --auto run", { timeout: 180_000 }, async () => {
-    const dir = await demoFixture();
+  it("finds the leak in one --auto run", { timeout: 180_000 }, async () => {
+    const dir = await leakyFixture();
 
     const result = await runCli(dir, "--auto", "--config", "playwright.config.ts");
 
@@ -128,7 +128,7 @@ describe("CLI end-to-end", () => {
   });
 
   it("advances one step per invocation and persists state between runs", { timeout: 180_000 }, async () => {
-    const dir = await demoFixture();
+    const dir = await leakyFixture();
 
     const first = await runCli(dir);
     expect(first.code).toBe(0);
@@ -252,7 +252,7 @@ describe("CLI end-to-end", () => {
   });
 
   it("--help exits 0 and prints usage", { timeout: 30_000 }, async () => {
-    const dir = await demoFixture();
+    const dir = await leakyFixture();
 
     const result = await runCli(dir, "--help");
 
@@ -262,7 +262,7 @@ describe("CLI end-to-end", () => {
   });
 
   it("--status reports no search, then the active target", { timeout: 180_000 }, async () => {
-    const dir = await demoFixture();
+    const dir = await leakyFixture();
 
     const empty = await runCli(dir, "--status");
     expect(empty.code).toBe(0);
@@ -278,7 +278,7 @@ describe("CLI end-to-end", () => {
   });
 
   it("--reset clears the state so the next run starts over", { timeout: 180_000 }, async () => {
-    const dir = await demoFixture();
+    const dir = await leakyFixture();
 
     const first = await runCli(dir);
     expect(first.code).toBe(0);

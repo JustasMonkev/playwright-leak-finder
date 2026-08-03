@@ -1,0 +1,23 @@
+{
+  "name": "task-board-demo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A real Playwright suite with a cross-test leak, to try playwright-leak-finder on",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "playwright test",
+    "leak": "playwright-leak-finder",
+    "leak:auto": "playwright-leak-finder --auto",
+    "leak:status": "playwright-leak-finder --status",
+    "leak:reset": "playwright-leak-finder --reset"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "playwright-leak-finder": "file:.."
+  }
+}

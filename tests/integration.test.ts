@@ -10,7 +10,8 @@ import {
 
 const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../..");
 
-// Runs the real `playwright test` CLI against a copy of the demo project.
+// Runs the real `playwright test` CLI against a copy of the leaky
+// fixture suite.
 // The fixture lives inside the repo so the spec can resolve @playwright/test.
 describe("leak finder against a real Playwright project", () => {
   let fixtureDir: string;
@@ -18,7 +19,9 @@ describe("leak finder against a real Playwright project", () => {
 
   beforeAll(async () => {
     fixtureDir = await mkdtemp(path.join(repoRoot, "tests", ".tmp-fixture-"));
-    await cp(path.join(repoRoot, "demo"), fixtureDir, { recursive: true });
+    await cp(path.join(repoRoot, "tests", "fixtures", "leaky-suite"), fixtureDir, {
+      recursive: true,
+    });
     finder = new LeakFinder(
       new PlaywrightRunner({ cwd: fixtureDir }),
       new FileStateStore(path.join(fixtureDir, ".playwright-leak-finder")),

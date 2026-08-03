@@ -26,19 +26,20 @@ npm install --save-dev playwright-leak-finder
 
 ## Usage
 
-Consider a suite where `test3` leaks state that makes `test5` fail (see
-[`demo/`](demo/) — it lives in this repository, not in the npm package, so
-clone the repo to follow along):
+Consider [`demo/`](demo/): a task board app with a browser suite where one
+test imports three tasks and forgets to delete them, which makes a later test
+fail. The demo lives in this repository, not in the npm package, so clone the
+repo to follow along (see [`demo/README.md`](demo/README.md) for its setup):
 
 ```
-$ npx playwright test --config demo
+$ cd demo && npx playwright test
 
-  ✓ test1
-  ✓ test2
-  ✓ test3
-  ✓ test4
-  ✘ test5
-  ✓ test6
+  ✓ tests/board.spec.ts:10:1 › adds a task from the form
+  ✓ tests/board.spec.ts:20:1 › marks a task as done
+  ✓ tests/import.spec.ts:5:1 › imports a batch of tasks
+  ✓ tests/import.spec.ts:20:1 › rejects a task without a title
+  ✘ tests/reports.spec.ts:3:1 › reports an empty board
+  ✓ tests/reports.spec.ts:12:1 › counts the tasks it creates
 ```
 
 Run the leak finder instead. Any argument you pass is forwarded to
@@ -49,7 +50,7 @@ for two kinds it rejects rather than silently ignoring:
   `--max-failures`/`-x`, `--list`, `--retries`, `--shard`, `--repeat-each`,
   `--ui`, `--debug`. Tests always run with `--workers=1` so execution order is
   deterministic, and the JSON reporter is how results are read back.
-- **Bare test filters** (`demo.spec.ts`, `demo.spec.ts:12`). Playwright ORs
+- **Bare test filters** (`reports.spec.ts`, `reports.spec.ts:12`). Playwright ORs
   those with the filters the search uses, so one would widen every step
   instead of narrowing it. Use `--grep` or `--project` instead.
 
@@ -58,58 +59,60 @@ does, there is no leak to hunt and the search stops there. Otherwise it sets
 the target and stops:
 
 ```
-$ npx playwright-leak-finder --config demo
+$ npx playwright-leak-finder
 
-  ✓ test1
-  ✓ test2
-  ✓ test3
-  ✓ test4
-  ✘ test5
+  ✓ tests/board.spec.ts:10:1 › adds a task from the form
+  ✓ tests/board.spec.ts:20:1 › marks a task as done
+  ✓ tests/import.spec.ts:5:1 › imports a batch of tasks
+  ✓ tests/import.spec.ts:20:1 › rejects a task without a title
+  ✘ tests/reports.spec.ts:3:1 › reports an empty board
 
 ========================= Leak finder =========================
-Target set to: demo.spec.ts › test5
+Target set to: reports.spec.ts › reports an empty board
 Suspects remaining: 4
 Run the same command again to bisect the tests before the target.
 ```
 
 The second run executes the first half of the tests that ran before the
-target (`test1` and `test2`), plus the target. Here the target passes, so the
-leak must be in the other half — `test3` and `test4` remain suspects:
+target (the two `board.spec.ts` tests), plus the target. Here the target
+passes, so the leak must be in the other half — the two `import.spec.ts`
+tests remain suspects:
 
 ```
-$ npx playwright-leak-finder --config demo
+$ npx playwright-leak-finder
 
-  ✓ test1
-  ✓ test2
-  ✓ test5
+  ✓ tests/board.spec.ts:10:1 › adds a task from the form
+  ✓ tests/board.spec.ts:20:1 › marks a task as done
+  ✓ tests/reports.spec.ts:3:1 › reports an empty board
 
 ========================= Leak finder =========================
 We reached the target and nothing failed. Let's bisect the other half.
 Suspects remaining: 2
-Current target is: demo.spec.ts › test5
+Current target is: reports.spec.ts › reports an empty board
 ```
 
-The third run bisects the remaining suspects down to `test3`:
+The third run bisects the remaining suspects down to one:
 
 ```
-$ npx playwright-leak-finder --config demo
+$ npx playwright-leak-finder
 
-  ✓ test3
-  ✘ test5
+  ✓ tests/import.spec.ts:5:1 › imports a batch of tasks
+  ✘ tests/reports.spec.ts:3:1 › reports an empty board
 
 ========================= Leak finder =========================
 We found a leak!
-Leak found in: demo.spec.ts › test3
+Leak found in: import.spec.ts › imports a batch of tasks
 This search is finished but its state is still saved: run --reset before starting another one.
 ```
 
-And there it is: `test3` was the problematic test we were looking for!
+And there it is: the batch import was the problematic test we were looking
+for — it never deletes the tasks it creates.
 
 There is no human verdict to give between steps — the tests themselves decide
 pass or fail — so you can also let it run the whole search in one go:
 
 ```
-$ npx playwright-leak-finder --auto --config demo
+$ npx playwright-leak-finder --auto
 ```
 
 The search state outlives the answer, so running the command again would just
@@ -165,7 +168,7 @@ The exit code distinguishes the outcomes, so the CLI is scriptable:
 import { FileStateStore, LeakFinder, PlaywrightRunner } from "playwright-leak-finder";
 
 const finder = new LeakFinder(new PlaywrightRunner(), new FileStateStore());
-const report = await finder.run(["--config", "demo"]);
+const report = await finder.run(["--grep", "@slow"]);
 
 console.log(report.lines.join("\n"));
 if (report.leakCandidate) {
@@ -184,3 +187,8 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+The unit and end-to-end tests run against a browserless fixture suite in
+[`tests/fixtures/leaky-suite/`](tests/fixtures/leaky-suite/). The browser demo
+in [`demo/`](demo/) is a separate package that links this one with `file:..`;
+build here before installing it, and it is not part of the published package.
