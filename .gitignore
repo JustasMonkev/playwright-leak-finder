@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Build output
+dist/
+
+# Leak finder state
+.playwright-leak-finder/
+
+# Playwright artifacts
+test-results/
+playwright-report/
+blob-report/
+
+# Test fixtures
+tests/.tmp-*/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+
+# Logs
+*.log

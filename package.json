@@ -1,0 +1,49 @@
+{
+  "name": "playwright-leak-finder",
+  "version": "0.1.0",
+  "description": "Find the Playwright test that's leaking state before the one that fails, via binary search",
+  "keywords": [
+    "playwright",
+    "testing",
+    "bisect",
+    "test-isolation",
+    "flaky-tests"
+  ],
+  "license": "MIT",
+  "author": "Martín Gaitán <gaitan@gmail.com>",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    }
+  },
+  "bin": {
+    "playwright-leak-finder": "dist/cli.mjs"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepack": "npm run build"
+  },
+  "peerDependencies": {
+    "@playwright/test": ">=1.40.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1",
+    "@types/node": "^26.1.2",
+    "tsdown": "^0.22.14",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
