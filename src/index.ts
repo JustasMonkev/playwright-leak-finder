@@ -2,6 +2,7 @@ export { bizect } from "./bizect";
 export { HELP, parseCliArgs, type CliOptions, type Command } from "./args";
 export { LeakFinder, type LeakFinderReport } from "./leak-finder";
 export {
+  PlaywrightInterruptedError,
   PlaywrightRunner,
   type RunOptions,
   type RunOutcome,

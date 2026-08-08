@@ -213,4 +213,17 @@ describe("packed package in a real Playwright consumer", () => {
       "A Playwright dependency project failed before the selected project could run",
     );
   });
+
+  it("does not mistake an all-skipped selected project teardown for setup failure", { timeout: 120_000 }, async () => {
+    const result = await runLeakFinder(
+      "--config=playwright.config.ts",
+      "--project=teardown-skipped",
+    );
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("No test failed: there is no target to bisect.");
+    expect(result.stderr).not.toContain(
+      "A Playwright dependency project failed before the selected project could run",
+    );
+  });
 });

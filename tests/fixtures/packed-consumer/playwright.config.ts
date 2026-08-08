@@ -30,6 +30,11 @@ export default defineConfig({
       testMatch: "**/teardown-dependent.spec.ts",
       dependencies: ["teardown-setup"],
     },
+    {
+      name: "teardown-skipped",
+      testMatch: "**/teardown-skipped.spec.ts",
+      dependencies: ["teardown-setup"],
+    },
     { name: "isolated", testMatch: "**/isolated.spec.ts" },
   ],
 });

@@ -36,6 +36,17 @@ export interface RunOptions {
   quiet?: boolean;
 }
 
+/** The Playwright child was stopped because this process received a signal. */
+export class PlaywrightInterruptedError extends Error {
+  readonly signal: NodeJS.Signals;
+
+  constructor(signal: NodeJS.Signals) {
+    super(`Playwright was interrupted by ${signal}`);
+    this.name = "PlaywrightInterruptedError";
+    this.signal = signal;
+  }
+}
+
 /** The subset of Playwright the leak finder needs, kept small for testability. */
 export interface TestRunner {
   list(passthroughArgs?: string[]): Promise<TestItem[]>;
@@ -89,29 +100,27 @@ export class PlaywrightRunner implements TestRunner {
       path.join(os.tmpdir(), "playwright-leak-finder-"),
     );
     const outputFile = path.join(outputDir, "report.json");
-    let forwardedSignal: NodeJS.Signals | undefined;
     try {
       const outcome = await this.spawnPlaywright(
         ["test", `--reporter=${quiet ? "json" : "list,json"}`, ...args],
         outputFile,
         quiet,
       );
-      forwardedSignal = outcome.forwardedSignal;
-      // Do not try to read a report from a deliberately interrupted run. The
-      // finally block removes its temp directory before re-raising the signal.
-      if (forwardedSignal !== undefined) {
-        return { specs: [], exitCode: outcome.exitCode };
+      // Programmatic consumers may have their own signal handler. Reject once
+      // cleanup has run; only the CLI layer translates this back into process
+      // termination, so library use never re-dispatches a consumer's signal.
+      if (outcome.forwardedSignal !== undefined) {
+        throw new PlaywrightInterruptedError(outcome.forwardedSignal);
       }
       const report = await readReport(outputFile, outcome.exitCode);
       const projects = selectedProjects(args);
       const specs = flattenSpecs(report, projects);
       // A teardown project is outside the selected project too, but it runs
-      // after the selected tests. Once at least one selected test executed,
-      // keep those useful results rather than mislabelling a later teardown
-      // failure as a prerequisite failure. If every selected test was skipped
-      // (or no selected test was reported), an outside failure did prevent the
-      // requested project from running and must be surfaced instead.
-      const dependencyFailures = selectedProjectExecuted(specs)
+      // after the selected tests. Once Playwright scheduled at least one
+      // selected test (including an intentional skip), keep those useful
+      // results rather than mislabelling a later teardown failure. Selected
+      // tests blocked by a setup failure have no result entries at all.
+      const dependencyFailures = selectedProjectWasScheduled(specs)
         ? []
         : failuresOutsideProjects(report, projects);
       if (dependencyFailures.length > 0) {
@@ -123,13 +132,7 @@ export class PlaywrightRunner implements TestRunner {
       assertSingleProject(specs);
       return { specs, exitCode: outcome.exitCode };
     } finally {
-      try {
-        await rm(outputDir, { recursive: true, force: true });
-      } finally {
-        if (forwardedSignal !== undefined) {
-          process.kill(process.pid, forwardedSignal);
-        }
-      }
+      await rm(outputDir, { recursive: true, force: true });
     }
   }
 
@@ -147,8 +150,8 @@ export class PlaywrightRunner implements TestRunner {
       });
       // Without this a terminating signal leaves `playwright test` — and its
       // browsers — running, and skips the temp-report cleanup in execute()'s
-      // finally. Re-raise the same signal after the child exits so this CLI
-      // retains the parent's normal SIGINT/SIGTERM exit semantics.
+      // finally. Return the signal after the child exits; the CLI re-raises it,
+      // while programmatic consumers receive a typed interruption error.
       let forwardedSignal: NodeJS.Signals | undefined;
       let forceKill: NodeJS.Timeout | undefined;
       const forwardSignal = (signal: NodeJS.Signals): void => {
@@ -349,16 +352,24 @@ interface JsonSuite {
   specs?: JsonSpec[];
 }
 
+interface JsonTest {
+  status?: string;
+  projectName?: string;
+  /** Empty when a dependency failure prevented this test from being scheduled. */
+  results?: unknown[];
+}
+
 interface JsonSpec {
   title: string;
   file: string;
   line: number;
-  tests?: Array<{ status?: string; projectName?: string }>;
+  tests?: JsonTest[];
 }
 
 interface FlatSpec extends TestItem {
   status: TestStatus;
   projects: string[];
+  wasScheduled: boolean;
 }
 
 /**
@@ -438,8 +449,8 @@ function failuresOutsideProjects(
     );
 }
 
-function selectedProjectExecuted(specs: readonly FlatSpec[]): boolean {
-  return specs.some((spec) => spec.status !== "skipped");
+function selectedProjectWasScheduled(specs: readonly FlatSpec[]): boolean {
+  return specs.some((spec) => spec.wasScheduled);
 }
 
 function flattenSpecs(
@@ -489,6 +500,11 @@ function toFlatSpec(
     line: spec.line,
     status: specStatus({ ...spec, tests }),
     projects: tests.map((test) => test.projectName ?? ""),
+    // Playwright emits a result even for an intentional test.skip/fixme. A
+    // skipped test with no results was blocked before scheduling, typically by
+    // a failed setup dependency. This also distinguishes a later teardown
+    // failure without needing unavailable dependency metadata in JSON config.
+    wasScheduled: tests.some((test) => (test.results?.length ?? 0) > 0),
   };
 }
 
