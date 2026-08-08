@@ -140,7 +140,7 @@ describe("performance", () => {
       const store = new FileStateStore(directory);
       const state = {
         steps: "abab",
-        target: "tests/spec-0.spec.ts › suite 0 › target test",
+        target: "tests/spec-0.spec.ts › suite 0 › test 0",
         items: makeItems(50_000),
       };
       const start = performance.now();

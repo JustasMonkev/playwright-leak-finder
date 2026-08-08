@@ -21,7 +21,11 @@ describe("forwarded argument validation", () => {
     "--retries=1",
     "--shard=1/2",
     "--repeat-each=3",
+    "--last-failed",
+    "--last-failed-file=.last-run.json",
     "--ui",
+    "--ui-host=127.0.0.1",
+    "--ui-port=9323",
     "--debug",
   ])("rejects %s, which would override what the search controls", async (arg) => {
     await expect(runner.run({ passthroughArgs: [arg] })).rejects.toThrow(

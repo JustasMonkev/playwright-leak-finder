@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -51,9 +52,16 @@ export class FileStateStore implements StateStore {
   async save(state: LeakFinderState): Promise<void> {
     await mkdir(path.dirname(this.file), { recursive: true });
     // Write then rename, so an interrupted run cannot leave truncated JSON
-    // that load() would silently discard along with the whole search.
-    await writeFile(`${this.file}.tmp`, `${JSON.stringify(state, null, 2)}\n`);
-    await rename(`${this.file}.tmp`, this.file);
+    // that load() would silently discard along with the whole search. Each
+    // writer gets its own temporary file so concurrent CLI runs cannot rename
+    // the same path out from under each other.
+    const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+      await rename(temporary, this.file);
+    } finally {
+      await rm(temporary, { force: true });
+    }
   }
 
   async clear(): Promise<void> {
@@ -68,8 +76,12 @@ function isSuiteItem(value: unknown): value is SuiteItem {
   const { id, file, line } = value as Record<string, unknown>;
   return (
     typeof id === "string" &&
+    id.length > 0 &&
     typeof file === "string" &&
-    typeof line === "number"
+    file.length > 0 &&
+    typeof line === "number" &&
+    Number.isSafeInteger(line) &&
+    line > 0
   );
 }
 
@@ -78,10 +90,23 @@ function isState(value: unknown): value is LeakFinderState {
     return false;
   }
   const { steps, target, items } = value as Record<string, unknown>;
+  if (
+    typeof steps !== "string" ||
+    !/^[ab]*$/u.test(steps) ||
+    (target !== null && typeof target !== "string") ||
+    !Array.isArray(items) ||
+    !items.every(isSuiteItem)
+  ) {
+    return false;
+  }
+  if (target === null) {
+    return steps.length === 0 && items.length === 0;
+  }
   return (
-    typeof steps === "string" &&
-    (target === null || typeof target === "string") &&
-    Array.isArray(items) &&
-    items.every(isSuiteItem)
+    target.length > 0 &&
+    steps.length > 0 &&
+    // Empty snapshots are accepted for state files written by versions that
+    // predate persisted suite items; the runner will collect them once.
+    (items.length === 0 || items.some((item) => item.id === target))
   );
 }

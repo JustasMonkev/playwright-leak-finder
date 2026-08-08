@@ -53,15 +53,15 @@ export class PlaywrightRunner implements TestRunner {
   private cliPath: string | undefined;
 
   constructor(options: { cwd?: string } = {}) {
-    this.cwd = options.cwd ?? process.cwd();
+    this.cwd = path.resolve(options.cwd ?? process.cwd());
   }
 
   async list(passthroughArgs: string[] = []): Promise<TestItem[]> {
     assertUsableArgs(passthroughArgs);
-    const { report } = await this.execute(["--list", ...passthroughArgs], {
+    const { specs } = await this.execute(["--list", ...passthroughArgs], {
       quiet: true,
     });
-    return flattenSpecs(report).map(({ id, file, line }) => ({ id, file, line }));
+    return specs.map(({ id, file, line }) => ({ id, file, line }));
   }
 
   async run(options: RunOptions = {}): Promise<RunOutcome> {
@@ -72,19 +72,19 @@ export class PlaywrightRunner implements TestRunner {
       ...(options.locations ?? []).map(locationArg),
       ...(options.passthroughArgs ?? []),
     ];
-    const { report, exitCode } = await this.execute(args, {
+    const { specs, exitCode } = await this.execute(args, {
       quiet: options.quiet ?? false,
     });
     return {
       exitCode,
-      results: flattenSpecs(report).map(({ id, file, line, status }) => ({ id, file, line, status })),
+      results: specs.map(({ id, file, line, status }) => ({ id, file, line, status })),
     };
   }
 
   private async execute(
     args: string[],
     { quiet }: { quiet: boolean },
-  ): Promise<{ report: JsonReport; exitCode: number }> {
+  ): Promise<{ specs: FlatSpec[]; exitCode: number }> {
     const outputDir = await mkdtemp(
       path.join(os.tmpdir(), "playwright-leak-finder-"),
     );
@@ -96,8 +96,17 @@ export class PlaywrightRunner implements TestRunner {
         quiet,
       );
       const report = await readReport(outputFile, exitCode);
-      assertSingleProject(report);
-      return { report, exitCode };
+      const projects = selectedProjects(args);
+      const specs = flattenSpecs(report, projects);
+      const dependencyFailures = failuresOutsideProjects(report, projects);
+      if (dependencyFailures.length > 0) {
+        throw new Error(
+          "A Playwright dependency project failed before the selected project could run:\n" +
+            dependencyFailures.map((failure) => `  ${failure}`).join("\n"),
+        );
+      }
+      assertSingleProject(specs);
+      return { specs, exitCode };
     } finally {
       await rm(outputDir, { recursive: true, force: true });
     }
@@ -176,7 +185,8 @@ function locationArg({ file, line }: { file: string; line: number }): string {
  * take over: `--workers=2` breaks declaration order, `--reporter=list`
  * suppresses the JSON report, `--retries` turns a failure into a `flaky`
  * pass, `--shard`/`--repeat-each` change which tests run and under which id,
- * and `--ui`/`--debug` never produce a usable report.
+ * `--last-failed` changes between search steps, and interactive UI/debug
+ * options never produce a usable report.
  */
 const RESERVED_ARGS = [
   "--reporter",
@@ -188,30 +198,45 @@ const RESERVED_ARGS = [
   "--retries",
   "--shard",
   "--repeat-each",
+  "--last-failed",
+  "--last-failed-file",
   "--ui",
+  "--ui-host",
+  "--ui-port",
   "--debug",
 ] as const;
 
+/**
+ * Playwright options that may consume the following token as their value.
+ * Keep this in sync with the `playwright test --help` option grammar. Boolean
+ * flags must not appear here: otherwise a positional test filter immediately
+ * after one (for example `--headed demo.spec.ts`) would evade validation and
+ * widen every bisection run.
+ */
+const VALUE_TAKING_ARGS = new Set([
+  "--browser",
+  "-c",
+  "--config",
+  "--global-timeout",
+  "-g",
+  "--grep",
+  "-G",
+  "--grep-invert",
+  "--only-changed",
+  "--output",
+  "--project",
+  "--run-agents",
+  "--test-list",
+  "--test-list-invert",
+  "--timeout",
+  "--trace",
+  "--tsconfig",
+  "-u",
+  "--update-snapshots",
+  "--update-source-method",
+]);
+
 function assertUsableArgs(args: readonly string[]): void {
-  // Positional test filters are OR'd with the `file:line` filters the search
-  // uses, so one would widen every step back to the whole file and pin the
-  // leak on an innocent test. --config/--project/--grep narrow, and are fine.
-  // ponytail: a bare token after a bare flag is assumed to be that flag's
-  // value (`--config demo`), so `--headed spec.ts` slips through. Enumerating
-  // Playwright's value-taking flags is the upgrade if that ever bites.
-  const positional = args.find((arg, index) => {
-    const previous = args[index - 1];
-    const isFlagValue =
-      previous !== undefined && previous.startsWith("-") && !previous.includes("=");
-    return !arg.startsWith("-") && !isFlagValue;
-  });
-  if (positional !== undefined) {
-    throw new Error(
-      `Cannot forward the test filter "${positional}" to \`playwright test\`: ` +
-        "it would be combined with the filters the search uses, widening " +
-        "every step instead of narrowing it. Use --grep or --project instead.",
-    );
-  }
   const reserved = args.find((arg) =>
     // Short flags carry their value attached (`-j2`) or clustered (`-xj2`).
     RESERVED_ARGS.some((flag) =>
@@ -225,6 +250,34 @@ function assertUsableArgs(args: readonly string[]): void {
       `Cannot forward ${reserved} to \`playwright test\`: the leak finder ` +
         `controls ${RESERVED_ARGS.join(", ")} itself, and overriding them ` +
         "would break the search. Remove it from your arguments.",
+    );
+  }
+
+  // Positional test filters are OR'd with the `file:line` filters the search
+  // uses, so one would widen every step back to the whole file and pin the
+  // leak on an innocent test. --config/--project/--grep narrow, and are fine.
+  let remainingValues = 0;
+  const positional = args.find((arg) => {
+    if (arg.startsWith("-")) {
+      remainingValues =
+        arg === "--project"
+          ? Number.POSITIVE_INFINITY
+          : VALUE_TAKING_ARGS.has(arg)
+            ? 1
+            : 0;
+      return false;
+    }
+    if (remainingValues > 0) {
+      remainingValues -= 1;
+      return false;
+    }
+    return true;
+  });
+  if (positional !== undefined) {
+    throw new Error(
+      `Cannot forward the test filter "${positional}" to \`playwright test\`: ` +
+        "it would be combined with the filters the search uses, widening " +
+        "every step instead of narrowing it. Use --grep or --project instead.",
     );
   }
 }
@@ -268,12 +321,8 @@ interface FlatSpec extends TestItem {
  * there is no single declaration order to bisect and ids are ambiguous.
  * Refuse rather than search a suite whose ordering premise does not hold.
  */
-function assertSingleProject(report: JsonReport): void {
-  const projects = new Set(
-    (report.suites ?? [])
-      .flatMap((fileSuite) => specsOf(fileSuite, []))
-      .flatMap((spec) => spec.projects),
-  );
+function assertSingleProject(specs: FlatSpec[]): void {
+  const projects = new Set(specs.flatMap((spec) => spec.projects));
   if (projects.size > 1) {
     throw new Error(
       `This run covers ${projects.size} Playwright projects ` +
@@ -283,31 +332,111 @@ function assertSingleProject(report: JsonReport): void {
   }
 }
 
-function flattenSpecs(report: JsonReport): FlatSpec[] {
+/**
+ * Returns the projects explicitly requested on the command line. Playwright
+ * also reports setup/dependency projects when one project is selected; those
+ * projects must execute, but their results are not part of the suite being
+ * bisected.
+ */
+function selectedProjects(args: readonly string[]): RegExp[] | undefined {
+  const names: string[] = [];
+  let readsProjectNames = false;
+  for (const arg of args) {
+    if (arg === "--project") {
+      readsProjectNames = true;
+    } else if (arg.startsWith("--project=")) {
+      names.push(arg.slice("--project=".length));
+      readsProjectNames = false;
+    } else if (arg.startsWith("-")) {
+      readsProjectNames = false;
+    } else if (readsProjectNames) {
+      names.push(arg);
+    }
+  }
+  if (names.length === 0) {
+    return undefined;
+  }
+  return names.map(projectPattern);
+}
+
+function projectPattern(name: string): RegExp {
+  const pattern = name
+    .split("*")
+    .map(escapeRegex)
+    .join(".*");
+  return new RegExp(`^${pattern}$`, "u");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function failuresOutsideProjects(
+  report: JsonReport,
+  selected: readonly RegExp[] | undefined,
+): string[] {
+  if (selected === undefined) {
+    return [];
+  }
+  const projectNames = new Set(
+    flattenSpecs(report).flatMap((spec) => spec.projects),
+  );
+  return [...projectNames]
+    .filter((name) => !selected.some((pattern) => pattern.test(name)))
+    .flatMap((name) =>
+      flattenSpecs(report, [new RegExp(`^${escapeRegex(name)}$`, "u")])
+        .filter((spec) => spec.status === "failed")
+        .map((spec) => `[${name}] ${spec.id}`),
+    );
+}
+
+function flattenSpecs(
+  report: JsonReport,
+  projects?: readonly RegExp[],
+): FlatSpec[] {
   // Top-level suites represent files; nested suites are describe blocks.
   // The report keeps a suite's own specs and its describe blocks in separate
   // arrays, losing their interleaving, so sort by line to recover declaration
   // order — which is the execution order the whole search depends on.
   return (report.suites ?? []).flatMap((fileSuite) =>
-    specsOf(fileSuite, []).sort((a, b) => a.line - b.line),
+    specsOf(fileSuite, [], projects).sort((a, b) => a.line - b.line),
   );
 }
 
-function specsOf(suite: JsonSuite, describePath: string[]): FlatSpec[] {
-  const own = (suite.specs ?? []).map((spec) => toFlatSpec(spec, describePath));
+function specsOf(
+  suite: JsonSuite,
+  describePath: string[],
+  projects?: readonly RegExp[],
+): FlatSpec[] {
+  const own = (suite.specs ?? []).flatMap((spec) => {
+    const flattened = toFlatSpec(spec, describePath, projects);
+    return flattened === null ? [] : [flattened];
+  });
   const nested = (suite.suites ?? []).flatMap((child) =>
-    specsOf(child, [...describePath, child.title]),
+    specsOf(child, [...describePath, child.title], projects),
   );
   return [...own, ...nested];
 }
 
-function toFlatSpec(spec: JsonSpec, describePath: string[]): FlatSpec {
+function toFlatSpec(
+  spec: JsonSpec,
+  describePath: string[],
+  projects?: readonly RegExp[],
+): FlatSpec | null {
+  const tests = (spec.tests ?? []).filter(
+    (test) =>
+      projects === undefined ||
+      projects.some((pattern) => pattern.test(test.projectName ?? "")),
+  );
+  if (projects !== undefined && tests.length === 0) {
+    return null;
+  }
   return {
     id: `${spec.file} › ${[...describePath, spec.title].join(" › ")}`,
     file: spec.file,
     line: spec.line,
-    status: specStatus(spec),
-    projects: (spec.tests ?? []).map((test) => test.projectName ?? ""),
+    status: specStatus({ ...spec, tests }),
+    projects: tests.map((test) => test.projectName ?? ""),
   };
 }
 
