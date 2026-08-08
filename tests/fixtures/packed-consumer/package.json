@@ -1,0 +1,5 @@
+{
+  "name": "playwright-leak-finder-consumer",
+  "private": true,
+  "type": "module"
+}

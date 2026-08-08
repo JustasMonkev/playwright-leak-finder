@@ -48,7 +48,8 @@ for two kinds it rejects rather than silently ignoring:
 
 - **Flags the search sets itself**: `--reporter`, `--workers`/`-j`,
   `--max-failures`/`-x`, `--list`, `--retries`, `--shard`, `--repeat-each`,
-  `--ui`, `--debug`. Tests always run with `--workers=1` so execution order is
+  `--last-failed`/`--last-failed-file`, `--ui`/`--ui-host`/`--ui-port`,
+  `--debug`. Tests always run with `--workers=1` so execution order is
   deterministic, and the JSON reporter is how results are read back.
 - **Bare test filters** (`reports.spec.ts`, `reports.spec.ts:12`). Playwright ORs
   those with the filters the search uses, so one would widen every step

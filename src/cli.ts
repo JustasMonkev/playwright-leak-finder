@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { HELP, parseCliArgs } from "./args";
 import { LeakFinder, type LeakFinderReport } from "./leak-finder";
-import { PlaywrightRunner } from "./playwright";
+import { PlaywrightInterruptedError, PlaywrightRunner } from "./playwright";
 import { FileStateStore } from "./state";
 
 async function main(): Promise<number> {
@@ -51,6 +51,13 @@ main().then(
     process.exitCode = code;
   },
   (error: unknown) => {
+    if (error instanceof PlaywrightInterruptedError) {
+      // PlaywrightRunner has already forwarded the signal to its child and
+      // removed the temporary report. Re-raise only for the CLI so exported
+      // library consumers with their own handler see the signal exactly once.
+      process.kill(process.pid, error.signal);
+      return;
+    }
     console.error(error instanceof Error ? error.message : error);
     process.exitCode = 1;
   },

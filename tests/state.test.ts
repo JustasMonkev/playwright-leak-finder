@@ -22,7 +22,20 @@ describe("FileStateStore", () => {
   });
 
   it("round-trips a saved state", async () => {
-    const state = { steps: "ba", target: "demo.spec.ts › test5", items: [{ id: "demo.spec.ts › test1", file: "demo.spec.ts", line: 3 }] };
+    const state = {
+      steps: "ba",
+      target: "demo.spec.ts › test5",
+      items: [
+        { id: "demo.spec.ts › test1", file: "demo.spec.ts", line: 3 },
+        { id: "demo.spec.ts › test5", file: "demo.spec.ts", line: 12 },
+      ],
+    };
+    await store.save(state);
+    expect(await store.load()).toEqual(state);
+  });
+
+  it("loads a legacy active state without a suite snapshot", async () => {
+    const state = { steps: "a", target: "demo.spec.ts › test5", items: [] };
     await store.save(state);
     expect(await store.load()).toEqual(state);
   });

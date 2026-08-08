@@ -61,7 +61,8 @@ Any other argument is forwarded to \`playwright test\` (--config, --project,
 --grep, ...), with two exceptions it rejects rather than silently ignores:
 
   * --reporter, --workers/-j, --max-failures/-x, --list, --retries, --shard,
-    --repeat-each, --ui and --debug. The search sets these itself: tests run
+    --repeat-each, --last-failed/--last-failed-file, --ui/--ui-host/--ui-port
+    and --debug. The search sets these itself: tests run
     with --workers=1 so execution order is deterministic, and the JSON
     reporter is how results are read back.
   * Bare test filters (a path or a \`file:line\`). Playwright combines those
