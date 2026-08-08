@@ -116,6 +116,23 @@ describe("packed package in a real Playwright consumer", () => {
     );
   });
 
+  it.each([
+    "ISOLATED",
+    "ISO*",
+  ])("matches Playwright project names case-insensitively for %s", { timeout: 180_000 }, async (project) => {
+    const result = await runLeakFinder(
+      "--auto",
+      "--config=playwright.config.ts",
+      `--project=${project}`,
+      "--grep=serial user workflow",
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(
+      "Leak found in: isolated.spec.ts › serial user workflow › nested flow › leaks selected state",
+    );
+  });
+
   it("uses exact source locations after collection from the installed API", { timeout: 120_000 }, async () => {
     const script = [
       'import { PlaywrightRunner } from "playwright-leak-finder";',
@@ -179,5 +196,21 @@ describe("packed package in a real Playwright consumer", () => {
       "[failing-setup] failing.setup.ts › fails to create the prerequisite",
     );
     expect(result.stdout).not.toContain("No test failed");
+  });
+
+  it("keeps selected-project results when its teardown fails", { timeout: 180_000 }, async () => {
+    const result = await runLeakFinder(
+      "--auto",
+      "--config=playwright.config.ts",
+      "--project=teardown-dependent",
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(
+      "Leak found in: teardown-dependent.spec.ts › project with failing teardown › leaker",
+    );
+    expect(result.stderr).not.toContain(
+      "A Playwright dependency project failed before the selected project could run",
+    );
   });
 });

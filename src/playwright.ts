@@ -89,16 +89,31 @@ export class PlaywrightRunner implements TestRunner {
       path.join(os.tmpdir(), "playwright-leak-finder-"),
     );
     const outputFile = path.join(outputDir, "report.json");
+    let forwardedSignal: NodeJS.Signals | undefined;
     try {
-      const exitCode = await this.spawnPlaywright(
+      const outcome = await this.spawnPlaywright(
         ["test", `--reporter=${quiet ? "json" : "list,json"}`, ...args],
         outputFile,
         quiet,
       );
-      const report = await readReport(outputFile, exitCode);
+      forwardedSignal = outcome.forwardedSignal;
+      // Do not try to read a report from a deliberately interrupted run. The
+      // finally block removes its temp directory before re-raising the signal.
+      if (forwardedSignal !== undefined) {
+        return { specs: [], exitCode: outcome.exitCode };
+      }
+      const report = await readReport(outputFile, outcome.exitCode);
       const projects = selectedProjects(args);
       const specs = flattenSpecs(report, projects);
-      const dependencyFailures = failuresOutsideProjects(report, projects);
+      // A teardown project is outside the selected project too, but it runs
+      // after the selected tests. Once at least one selected test executed,
+      // keep those useful results rather than mislabelling a later teardown
+      // failure as a prerequisite failure. If every selected test was skipped
+      // (or no selected test was reported), an outside failure did prevent the
+      // requested project from running and must be surfaced instead.
+      const dependencyFailures = selectedProjectExecuted(specs)
+        ? []
+        : failuresOutsideProjects(report, projects);
       if (dependencyFailures.length > 0) {
         throw new Error(
           "A Playwright dependency project failed before the selected project could run:\n" +
@@ -106,9 +121,15 @@ export class PlaywrightRunner implements TestRunner {
         );
       }
       assertSingleProject(specs);
-      return { specs, exitCode };
+      return { specs, exitCode: outcome.exitCode };
     } finally {
-      await rm(outputDir, { recursive: true, force: true });
+      try {
+        await rm(outputDir, { recursive: true, force: true });
+      } finally {
+        if (forwardedSignal !== undefined) {
+          process.kill(process.pid, forwardedSignal);
+        }
+      }
     }
   }
 
@@ -116,7 +137,7 @@ export class PlaywrightRunner implements TestRunner {
     args: string[],
     jsonOutputFile: string,
     quiet: boolean,
-  ): Promise<number> {
+  ): Promise<{ exitCode: number; forwardedSignal?: NodeJS.Signals }> {
     const cli = this.resolveCli();
     return new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [cli, ...args], {
@@ -124,16 +145,40 @@ export class PlaywrightRunner implements TestRunner {
         stdio: ["ignore", quiet ? "ignore" : "inherit", "inherit"],
         env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOutputFile },
       });
-      // Without this a SIGTERM leaves `playwright test` — and its browsers —
-      // running, and skips the temp-report cleanup in execute()'s finally.
-      const stop = (): void => {
-        child.kill();
+      // Without this a terminating signal leaves `playwright test` — and its
+      // browsers — running, and skips the temp-report cleanup in execute()'s
+      // finally. Re-raise the same signal after the child exits so this CLI
+      // retains the parent's normal SIGINT/SIGTERM exit semantics.
+      let forwardedSignal: NodeJS.Signals | undefined;
+      let forceKill: NodeJS.Timeout | undefined;
+      const forwardSignal = (signal: NodeJS.Signals): void => {
+        if (forwardedSignal === undefined) {
+          forwardedSignal = signal;
+          child.kill(signal);
+          // A child that ignores a signal must not make the parent CLI hang
+          // forever. Give Playwright time to close browsers cleanly first.
+          forceKill = setTimeout(() => child.kill("SIGKILL"), 5_000);
+          forceKill.unref();
+        }
       };
-      process.once("SIGINT", stop).once("SIGTERM", stop);
-      child.on("error", reject);
+      const cleanupSignalHandlers = (): void => {
+        process.off("SIGINT", forwardSignal).off("SIGTERM", forwardSignal);
+        if (forceKill !== undefined) {
+          clearTimeout(forceKill);
+        }
+      };
+      process.once("SIGINT", forwardSignal).once("SIGTERM", forwardSignal);
+      child.on("error", (error) => {
+        cleanupSignalHandlers();
+        reject(error);
+      });
       child.on("close", (code) => {
-        process.off("SIGINT", stop).off("SIGTERM", stop);
-        resolve(code ?? 1);
+        cleanupSignalHandlers();
+        resolve(
+          forwardedSignal === undefined
+            ? { exitCode: code ?? 1 }
+            : { exitCode: code ?? 1, forwardedSignal },
+        );
       });
     });
   }
@@ -364,7 +409,10 @@ function projectPattern(name: string): RegExp {
     .split("*")
     .map(escapeRegex)
     .join(".*");
-  return new RegExp(`^${pattern}$`, "u");
+  // Playwright matches --project names case-insensitively. Mirror that when
+  // filtering its JSON report so selected tests do not disappear after the
+  // CLI accepted the user's spelling.
+  return new RegExp(`^${pattern}$`, "iu");
 }
 
 function escapeRegex(value: string): string {
@@ -388,6 +436,10 @@ function failuresOutsideProjects(
         .filter((spec) => spec.status === "failed")
         .map((spec) => `[${name}] ${spec.id}`),
     );
+}
+
+function selectedProjectExecuted(specs: readonly FlatSpec[]): boolean {
+  return specs.some((spec) => spec.status !== "skipped");
 }
 
 function flattenSpecs(

@@ -16,6 +16,20 @@ export default defineConfig({
       testMatch: "**/blocked.spec.ts",
       dependencies: ["failing-setup"],
     },
+    {
+      name: "teardown-setup",
+      testMatch: "**/teardown.setup.ts",
+      teardown: "teardown-cleanup",
+    },
+    {
+      name: "teardown-cleanup",
+      testMatch: "**/teardown.cleanup.ts",
+    },
+    {
+      name: "teardown-dependent",
+      testMatch: "**/teardown-dependent.spec.ts",
+      dependencies: ["teardown-setup"],
+    },
     { name: "isolated", testMatch: "**/isolated.spec.ts" },
   ],
 });
