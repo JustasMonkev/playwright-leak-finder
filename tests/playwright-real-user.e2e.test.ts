@@ -30,6 +30,47 @@ function command(
   });
 }
 
+describe("published package contents", () => {
+  it("ships the built entry points, executable, and nothing from the working tree", { timeout: 120_000 }, async () => {
+    // `files` is what separates a working `npx playwright-leak-finder` from a
+    // package that installs but cannot run. Ask npm what it would publish
+    // rather than trusting the field by eye.
+    const result = await command(
+      "npm",
+      ["pack", "--dry-run", "--json", "--ignore-scripts"],
+      repoRoot,
+    );
+    expect(result.code).toBe(0);
+    const parsed: unknown = JSON.parse(result.stdout);
+    const manifest = (
+      Array.isArray(parsed) ? parsed[0] : Object.values(parsed as object)[0]
+    ) as { files: Array<{ path: string; mode: number }> };
+    const paths = manifest.files.map((entry) => entry.path);
+
+    for (const required of [
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "dist/cli.mjs",
+      "dist/index.mjs",
+      "dist/index.d.mts",
+      "dist/cli.d.mts",
+    ]) {
+      expect(paths).toContain(required);
+    }
+    expect(
+      paths.filter((entry) =>
+        /^(src|tests|demo|node_modules|\.idea|\.claude)\//u.test(entry),
+      ),
+    ).toEqual([]);
+
+    // The `bin` target is spawned directly by npm's shim, so it has to keep
+    // the execute bit the build grants it.
+    const cli = manifest.files.find((entry) => entry.path === "dist/cli.mjs")!;
+    expect(cli.mode & 0o111).not.toBe(0);
+  });
+});
+
 describe("packed package in a real Playwright consumer", () => {
   let workDir: string;
   let consumerDir: string;
@@ -96,6 +137,20 @@ describe("packed package in a real Playwright consumer", () => {
   // another, unrelated investigation; do the same for independent scenarios.
   beforeEach(async () => {
     expect((await runLeakFinder("--reset")).code).toBe(0);
+  });
+
+  it("runs from the installed bin without an explicit node", { timeout: 60_000 }, async () => {
+    // How a consumer actually invokes it. This is the only check that the
+    // shebang survived bundling and that npm's shim is executable.
+    const result = await command(
+      path.join(consumerDir, "node_modules", ".bin", "playwright-leak-finder"),
+      ["--help"],
+      consumerDir,
+    );
+
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Usage:");
+    expect(result.stdout).toContain("--auto");
   });
 
   it("finds a nested serial leak while forwarding config, project, and grep", { timeout: 180_000 }, async () => {

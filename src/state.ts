@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface SuiteItem {
@@ -66,6 +66,14 @@ export class FileStateStore implements StateStore {
 
   async clear(): Promise<void> {
     await rm(this.file, { force: true });
+    // The directory exists only to hold that file, so clearing the search
+    // should not leave it behind. rmdir refuses a non-empty directory, which
+    // is what keeps this from removing anything the user put there.
+    try {
+      await rmdir(path.dirname(this.file));
+    } catch {
+      // Never created, or not ours alone.
+    }
   }
 }
 

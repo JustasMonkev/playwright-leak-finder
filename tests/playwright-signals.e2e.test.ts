@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -38,14 +38,64 @@ function waitForOutput(
   });
 }
 
+const isAlive = (pid: number): boolean => {
+  try {
+    // Signal 0 only checks for the process, it does not deliver anything.
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+async function waitUntilGone(pid: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return false;
+}
+
+async function waitForFile(file: string, timeoutMs: number): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const contents = (await readFile(file, "utf8")).trim();
+      if (contents.length > 0) {
+        return contents;
+      }
+    } catch {
+      // Not written yet.
+    }
+    if (Date.now() >= deadline) {
+      throw new Error(`Timed out waiting for ${file}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
 describe("CLI signal forwarding", () => {
   const cleanups: Array<() => Promise<void>> = [];
   const children: ChildProcess[] = [];
+  const strayPids: number[] = [];
 
   afterEach(async () => {
     for (const child of children.splice(0)) {
       if (child.exitCode === null && child.signalCode === null) {
         child.kill("SIGKILL");
+      }
+    }
+    // A test that proves an orphan was left must not leak it into the suite.
+    for (const pid of strayPids.splice(0)) {
+      if (isAlive(pid)) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+          // Already gone between the check and the kill.
+        }
       }
     }
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
@@ -58,6 +108,7 @@ describe("CLI signal forwarding", () => {
       const cwd = await mkdtemp(path.join(repoRoot, "tests", ".tmp-signal-"));
       cleanups.push(() => rm(cwd, { recursive: true, force: true }));
       const tempDir = path.join(cwd, "tmp");
+      const pidFile = path.join(cwd, "worker.pid");
       await Promise.all([
         mkdir(tempDir),
         writeFile(path.join(cwd, "package.json"), '{ "type": "module" }\n'),
@@ -68,15 +119,19 @@ describe("CLI signal forwarding", () => {
         ),
         writeFile(
           path.join(cwd, "hang.spec.ts"),
-          'import { test } from "@playwright/test";\n' +
-            'test("waits for a signal", async () => await new Promise(() => {}));\n',
+          'import { writeFileSync } from "node:fs";\n' +
+            'import { test } from "@playwright/test";\n' +
+            'test("waits for a signal", async () => {\n' +
+            "  writeFileSync(process.env.WORKER_PID_FILE, String(process.pid));\n" +
+            "  await new Promise(() => {});\n" +
+            "});\n",
         ),
       ]);
 
       const child = spawn(process.execPath, [cli, "--config=playwright.config.ts"], {
         cwd,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, TMPDIR: tempDir },
+        env: { ...process.env, TMPDIR: tempDir, WORKER_PID_FILE: pidFile },
       });
       children.push(child);
       let stdout = "";
@@ -91,10 +146,26 @@ describe("CLI signal forwarding", () => {
       });
 
       await waitForOutput(child, () => `${stdout}${stderr}`, /Running 1 test/u);
+      // The worker is what actually holds a browser open, so wait until one
+      // exists before signalling: killing the CLI before Playwright spawned
+      // anything would prove nothing.
+      const workerPid = Number(await waitForFile(pidFile, 20_000));
+      expect(Number.isInteger(workerPid)).toBe(true);
+      strayPids.push(workerPid);
       expect(child.pid).toBeTypeOf("number");
+      const signalledAt = Date.now();
       process.kill(child.pid!, signal);
 
       await expect(exited).resolves.toMatchObject({ code: null, signal });
+      const elapsed = Date.now() - signalledAt;
+      // The runner also arms a 5s SIGKILL for a child that ignores the signal.
+      // Relying on that backstop instead of forwarding would still end the run
+      // eventually, so bound the wait: the signal has to reach Playwright now,
+      // not five seconds after the user pressed Ctrl-C. Measured at ~50ms.
+      expect(elapsed).toBeLessThan(3_000);
+      // Without forwarding, `playwright test` and its worker outlive the CLI:
+      // the user gets their prompt back and a browser keeps running.
+      expect(await waitUntilGone(workerPid, 15_000)).toBe(true);
       expect(
         (await readdir(tempDir)).filter((entry) =>
           entry.startsWith("playwright-leak-finder-"),

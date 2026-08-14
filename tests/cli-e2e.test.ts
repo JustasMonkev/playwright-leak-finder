@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { access, cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, describe, expect, it } from "vitest";
@@ -209,6 +210,97 @@ describe("CLI end-to-end", () => {
     );
     // The search did run, so its state stays saved until --reset.
     expect(await exists(stateFile(dir))).toBe(true);
+  });
+
+  it.each([
+    [
+      "global setup crashes",
+      {
+        "playwright.config.ts":
+          'import { defineConfig } from "@playwright/test";\n' +
+          'export default defineConfig({ testDir: ".", globalSetup: "./setup.ts" });\n',
+        "setup.ts":
+          'export default async function () { throw new Error("global setup exploded"); }\n',
+        "ok.spec.ts": ALL_PASS_SPEC,
+      },
+      "global setup exploded",
+    ],
+    [
+      "a spec cannot be imported",
+      {
+        "playwright.config.ts": CONFIG,
+        "broken.spec.ts":
+          'import { test } from "@playwright/test";\n' +
+          'import { missing } from "./does-not-exist";\n' +
+          'test("uses it", () => missing());\n',
+      },
+      "Cannot find module",
+    ],
+  ])(
+    "exits 1 when %s, instead of reporting an empty suite",
+    { timeout: 120_000 },
+    async (_name, files, cause) => {
+      // Playwright writes a report for these, with no specs in it, which reads
+      // exactly like a suite that has no tests. Exit 2 would tell a CI script
+      // the search finished and found nothing, when in fact nothing ran.
+      const dir = await fileFixture(files);
+
+      const result = await runCli(dir);
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("Playwright could not run the suite:");
+      expect(result.stderr).toContain(cause);
+      expect(result.stdout).not.toContain("No tests were collected");
+      expect(await exists(stateDir(dir))).toBe(false);
+    },
+  );
+
+  it("still exits 2 for a suite that genuinely has no tests", { timeout: 60_000 }, async () => {
+    // The neighbour of the case above, and the reason it has to be narrow: a
+    // filter that matches nothing is a finished search, not a broken project.
+    const dir = await fileFixture({
+      "playwright.config.ts": CONFIG,
+      "ok.spec.ts": ALL_PASS_SPEC,
+    });
+
+    const result = await runCli(dir, "--grep", "no-such-test-anywhere");
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain(
+      "No tests were collected, so there is nothing to bisect.",
+    );
+    expect(result.stderr).toBe("");
+  });
+
+  it("exits 1 with an actionable message when @playwright/test is missing", { timeout: 30_000 }, async () => {
+    // Outside the repository, so nothing resolves @playwright/test upwards.
+    const dir = await track(await mkdtemp(path.join(os.tmpdir(), "leak-finder-bare-")));
+
+    const result = await runCli(dir);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("Could not resolve @playwright/test from");
+    expect(result.stderr).toContain(
+      "Install it in your project before running the leak finder.",
+    );
+    expect(result.stdout).toBe("");
+    expect(await exists(stateDir(dir))).toBe(false);
+  });
+
+  it("exits 1 and leaves no state on an empty argument", { timeout: 30_000 }, async () => {
+    // An empty string reaches Playwright as a filter matching every file, so
+    // it must be refused like any other bare filter rather than widening the
+    // run silently.
+    const dir = await fileFixture({
+      "playwright.config.ts": CONFIG,
+      "ok.spec.ts": ALL_PASS_SPEC,
+    });
+
+    const result = await runCli(dir, "");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('Cannot forward the test filter ""');
+    expect(await exists(stateDir(dir))).toBe(false);
   });
 
   it("exits 1 and leaves no state on a reserved flag", { timeout: 30_000 }, async () => {

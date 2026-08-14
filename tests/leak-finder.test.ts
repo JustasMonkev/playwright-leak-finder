@@ -266,6 +266,38 @@ describe("LeakFinder", () => {
     );
   });
 
+  it("collects the suite once when resuming a state saved without a snapshot", async () => {
+    // State files written before suite snapshots existed carry a target and
+    // steps but no items. Resuming one must fall back to listing the suite
+    // instead of treating the pool as empty and giving up.
+    const store = new MemoryStateStore();
+    await store.save({ steps: "a", target: "demo.spec.ts › test5", items: [] });
+    let listCalls = 0;
+    const leaky = leakySuite();
+    class CountingRunner implements TestRunner {
+      async list(): Promise<TestItem[]> {
+        listCalls += 1;
+        return leaky.list();
+      }
+
+      async run(options: RunOptions = {}): Promise<RunOutcome> {
+        return leaky.run(options);
+      }
+    }
+    const finder = new LeakFinder(new CountingRunner(), store);
+
+    const result = await finder.run();
+
+    expect(listCalls).toBe(1);
+    expect(result.lines[0]).toBe(
+      "We reached the target and nothing failed. Let's bisect the other half.",
+    );
+    expect(result.lines).toContain("Suspects remaining: 2");
+    // The snapshot stays empty, so the next step lists again rather than
+    // inventing an ordering.
+    expect((await store.load()).items).toEqual([]);
+  });
+
   it("bisects from the state snapshot without listing", async () => {
     const leakyRunner = leakySuite();
     // Wrap to prevent list() calls after capturing the snapshot.

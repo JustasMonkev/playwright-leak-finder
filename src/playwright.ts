@@ -102,7 +102,17 @@ export class PlaywrightRunner implements TestRunner {
     const outputFile = path.join(outputDir, "report.json");
     try {
       const outcome = await this.spawnPlaywright(
-        ["test", `--reporter=${quiet ? "json" : "list,json"}`, ...args],
+        [
+          "test",
+          `--reporter=${quiet ? "json" : "list,json"}`,
+          // Collecting nothing is a normal outcome here: a bisection step
+          // whose file:line filters match nothing, or a --grep that excludes
+          // everything. Without this Playwright calls that an error, which
+          // would be indistinguishable from a config that genuinely failed to
+          // run. With it, `errors` is empty unless something really broke.
+          "--pass-with-no-tests",
+          ...args,
+        ],
         outputFile,
         quiet,
       );
@@ -113,6 +123,7 @@ export class PlaywrightRunner implements TestRunner {
         throw new PlaywrightInterruptedError(outcome.forwardedSignal);
       }
       const report = await readReport(outputFile, outcome.exitCode);
+      assertPlaywrightRan(report);
       const projects = selectedProjects(args);
       const specs = flattenSpecs(report, projects);
       // A teardown project is outside the selected project too, but it runs
@@ -344,6 +355,40 @@ async function readReport(file: string, exitCode: number): Promise<JsonReport> {
 // Minimal shape of Playwright's JSON reporter output.
 interface JsonReport {
   suites?: JsonSuite[];
+  /** Failures outside any test: globalSetup, webServer, spec load errors. */
+  errors?: JsonError[];
+}
+
+interface JsonError {
+  message?: string;
+}
+
+/**
+ * A run that never got as far as executing the suite tells us nothing about
+ * the leak. Playwright reports those failures outside the test tree — a
+ * crashed `globalSetup`, a `webServer` that never came up, a spec file that
+ * fails to import — and still writes a report, with no specs in it at all.
+ *
+ * Left alone that looks exactly like a suite with no tests, so the search
+ * would announce it had nothing to bisect and exit as if it had finished.
+ *
+ * Requiring an empty report is what keeps this narrow. `errors` also carries
+ * notices from runs that did happen — `--max-failures=1` adds "Testing stopped
+ * early" to every capture run that found its target — and those always come
+ * with the specs they describe.
+ */
+function assertPlaywrightRan(report: JsonReport): void {
+  const messages = (report.errors ?? [])
+    .map((error) => error.message?.split("\n")[0]?.trim())
+    .filter((message) => message !== undefined && message.length > 0);
+  if (messages.length === 0 || flattenSpecs(report).length > 0) {
+    return;
+  }
+  throw new Error(
+    "Playwright could not run the suite:\n" +
+      messages.map((message) => `  ${message}`).join("\n") +
+      "\nFix that first, then run the leak finder again.",
+  );
 }
 
 interface JsonSuite {
