@@ -17,7 +17,7 @@ test("counts the tasks it creates", async ({ page, request }) => {
   await page.reload();
   await expect(page.getByRole("listitem")).toHaveCount(before + 1);
 
-  await request.delete(`/api/tasks/${(await created.json()).id as number}`);
+  await request.delete(`/api/tasks/${(await created.json()).id}`);
   await page.reload();
   await expect(page.getByRole("listitem")).toHaveCount(before);
 });

@@ -222,7 +222,7 @@ function locationArg({ file, line }: { file: string; line: number }): string {
     segments.shift();
   }
   const pattern = segments
-    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"))
+    .map(escapeRegex)
     .join("[/\\\\]");
   return `/[/\\\\]${pattern}$/:${line}`;
 }
@@ -332,6 +332,7 @@ function assertUsableArgs(args: readonly string[]): void {
 
 async function readReport(file: string, exitCode: number): Promise<JsonReport> {
   try {
+    // SAFETY: Only Playwright's JSON reporter writes this file in our private temporary directory.
     return JSON.parse(await readFile(file, "utf8")) as JsonReport;
   } catch (cause) {
     throw new Error(

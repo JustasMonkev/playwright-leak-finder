@@ -88,7 +88,7 @@ const send = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
-async function readJson(req) {
+async function readJson(req, res) {
   let raw = "";
   for await (const chunk of req) {
     raw += chunk;
@@ -96,7 +96,7 @@ async function readJson(req) {
   try {
     return raw === "" ? {} : JSON.parse(raw);
   } catch {
-    return {};
+    send(res, 400, { error: "Invalid JSON" });
   }
 }
 
@@ -115,7 +115,9 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST") {
-      const { title } = await readJson(req);
+      const body = await readJson(req, res);
+      if (body === undefined) return;
+      const { title } = body;
       if (typeof title !== "string" || title.trim() === "") {
         send(res, 400, { error: "title is required" });
         return;
@@ -136,7 +138,9 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "PATCH") {
-      const { done } = await readJson(req);
+      const body = await readJson(req, res);
+      if (body === undefined) return;
+      const { done } = body;
       tasks.set(id, { ...task, done: Boolean(done) });
       send(res, 200, tasks.get(id));
       return;
@@ -147,5 +151,5 @@ const server = createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`Task board listening on http://localhost:${PORT}`);
+  console.log(`Task board listening on http://localhost:${server.address().port}`);
 });
