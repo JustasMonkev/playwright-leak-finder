@@ -146,6 +146,7 @@ describe("packed package in a real Playwright consumer", () => {
     const result = await command(process.execPath, ["--input-type=module", "--eval", script], consumerDir);
 
     expect(result.code).toBe(0);
+    // SAFETY: The child script above serializes the runner's items and outcome; assertions below verify them.
     const report = JSON.parse(result.stdout) as {
       items: Array<{ id: string; file: string; line: number }>;
       outcome: { results: Array<{ id: string; status: string }> };

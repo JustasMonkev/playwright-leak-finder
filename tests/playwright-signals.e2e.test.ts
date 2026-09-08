@@ -179,6 +179,7 @@ describe("CLI signal forwarding", () => {
           try {
             return JSON.parse(line) as unknown;
           } catch {
+            // Playwright progress lines share stdout with the JSON summary and are not summary candidates.
             return null;
           }
         })

@@ -70,10 +70,13 @@ export class FileStateStore implements StateStore {
 }
 
 function isSuiteItem(value: unknown): value is SuiteItem {
-  if (typeof value !== "object" || value === null) {
+  if (
+    typeof value !== "object" || value === null ||
+    !("id" in value) || !("file" in value) || !("line" in value)
+  ) {
     return false;
   }
-  const { id, file, line } = value as Record<string, unknown>;
+  const { id, file, line } = value;
   return (
     typeof id === "string" &&
     id.length > 0 &&
@@ -86,10 +89,13 @@ function isSuiteItem(value: unknown): value is SuiteItem {
 }
 
 function isState(value: unknown): value is LeakFinderState {
-  if (typeof value !== "object" || value === null) {
+  if (
+    typeof value !== "object" || value === null ||
+    !("steps" in value) || !("target" in value) || !("items" in value)
+  ) {
     return false;
   }
-  const { steps, target, items } = value as Record<string, unknown>;
+  const { steps, target, items } = value;
   if (
     typeof steps !== "string" ||
     !/^[ab]*$/u.test(steps) ||

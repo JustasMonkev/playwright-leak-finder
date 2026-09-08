@@ -6,27 +6,18 @@ import { expect, test } from "@playwright/test";
 //   npx playwright-leak-finder --config demo
 const leakState: string[] = [];
 
-test("test1", () => {
-  expect(true).toBeTruthy();
-});
+test("test1", () => {});
 
-test("test2", () => {
-  expect(true).toBeTruthy();
-});
+test("test2", () => {});
 
 test("test3", () => {
   leakState.push("leak");
-  expect(true).toBeTruthy();
 });
 
-test("test4", () => {
-  expect(true).toBeTruthy();
-});
+test("test4", () => {});
 
 test("test5", () => {
   expect(leakState).toEqual([]);
 });
 
-test("test6", () => {
-  expect(true).toBeTruthy();
-});
+test("test6", () => {});

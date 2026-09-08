@@ -71,6 +71,7 @@ describe("persisted state through real user workflows", () => {
   }
 
   async function savedState(cwd: string): Promise<Record<string, unknown>> {
+    // SAFETY: This file is written by FileStateStore in the test's isolated project; values stay unknown for assertions.
     return JSON.parse(await readFile(stateFile(cwd), "utf8")) as Record<string, unknown>;
   }
 
