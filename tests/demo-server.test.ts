@@ -35,14 +35,15 @@ it("rejects malformed JSON without creating or changing tasks", async () => {
     throw new Error("The demo server did not return a task id");
   }
   const taskUrl = `${baseUrl}/api/tasks/${task.id}`;
-  expect((await fetch(taskUrl, { method: "PATCH", body: '{"done":true}' })).status).toBe(200);
+  const updatedTask = { id: task.id, title: "Keep me", done: true };
+  const updated = await fetch(taskUrl, { method: "PATCH", body: '{"done":true}' });
+  expect(updated.status).toBe(200);
+  expect(await updated.json()).toEqual(updatedTask);
 
   for (const [url, method] of [[taskUrl, "PATCH"], [`${baseUrl}/api/tasks`, "POST"]] as const) {
     const rejected = await fetch(url, { method, body: "{broken" });
     expect(rejected.status).toBe(400);
     expect(await rejected.json()).toEqual({ error: "Invalid JSON" });
   }
-  expect(await (await fetch(`${baseUrl}/api/tasks`)).json()).toEqual([
-    { id: task.id, title: "Keep me", done: true },
-  ]);
+  expect(await (await fetch(`${baseUrl}/api/tasks`)).json()).toEqual([updatedTask]);
 });

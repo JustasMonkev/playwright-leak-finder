@@ -141,8 +141,9 @@ const server = createServer(async (req, res) => {
       const body = await readJson(req, res);
       if (body === undefined) return;
       const { done } = body;
-      tasks.set(id, { ...task, done: Boolean(done) });
-      send(res, 200, tasks.get(id));
+      const updated = { ...task, done: Boolean(done) };
+      tasks.set(id, updated);
+      send(res, 200, updated);
       return;
     }
   }
