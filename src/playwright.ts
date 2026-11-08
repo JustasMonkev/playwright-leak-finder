@@ -69,23 +69,20 @@ export class PlaywrightRunner implements TestRunner {
 
   async list(passthroughArgs: string[] = []): Promise<TestItem[]> {
     assertUsableArgs(passthroughArgs);
-    const { specs } = await this.execute(["--list", ...passthroughArgs], {
-      quiet: true,
-    });
+    const { specs } = await this.execute(["--list", ...passthroughArgs], true);
     return specs.map(({ id, file, line }) => ({ id, file, line }));
   }
 
   async run(options: RunOptions = {}): Promise<RunOutcome> {
-    assertUsableArgs(options.passthroughArgs ?? []);
+    const passthroughArgs = options.passthroughArgs ?? [];
+    assertUsableArgs(passthroughArgs);
     const args = [
       "--workers=1",
       ...(options.stopOnFirstFailure ? ["--max-failures=1"] : []),
       ...(options.locations ?? []).map(locationArg),
-      ...(options.passthroughArgs ?? []),
+      ...passthroughArgs,
     ];
-    const { specs, exitCode } = await this.execute(args, {
-      quiet: options.quiet ?? false,
-    });
+    const { specs, exitCode } = await this.execute(args, options.quiet ?? false);
     return {
       exitCode,
       results: specs.map(({ id, file, line, status }) => ({ id, file, line, status })),
@@ -94,7 +91,7 @@ export class PlaywrightRunner implements TestRunner {
 
   private async execute(
     args: string[],
-    { quiet }: { quiet: boolean },
+    quiet: boolean,
   ): Promise<{ specs: FlatSpec[]; exitCode: number }> {
     const outputDir = await mkdtemp(
       path.join(os.tmpdir(), "playwright-leak-finder-"),
@@ -120,7 +117,7 @@ export class PlaywrightRunner implements TestRunner {
       // selected test (including an intentional skip), keep those useful
       // results rather than mislabelling a later teardown failure. Selected
       // tests blocked by a setup failure have no result entries at all.
-      const dependencyFailures = selectedProjectWasScheduled(specs)
+      const dependencyFailures = specs.some((spec) => spec.wasScheduled)
         ? []
         : failuresOutsideProjects(report, projects);
       if (dependencyFailures.length > 0) {
@@ -450,10 +447,6 @@ function failuresOutsideProjects(
     );
 }
 
-function selectedProjectWasScheduled(specs: readonly FlatSpec[]): boolean {
-  return specs.some((spec) => spec.wasScheduled);
-}
-
 function flattenSpecs(
   report: JsonReport,
   projects?: readonly RegExp[],
@@ -499,7 +492,7 @@ function toFlatSpec(
     id: `${spec.file} › ${[...describePath, spec.title].join(" › ")}`,
     file: spec.file,
     line: spec.line,
-    status: specStatus({ ...spec, tests }),
+    status: specStatus(spec.title, tests),
     projects: tests.map((test) => test.projectName ?? ""),
     // Playwright emits a result even for an intentional test.skip/fixme. A
     // skipped test with no results was blocked before scheduling, typically by
@@ -509,8 +502,8 @@ function toFlatSpec(
   };
 }
 
-function specStatus(spec: JsonSpec): TestStatus {
-  const statuses = (spec.tests ?? []).map((test) => test.status);
+function specStatus(title: string, tests: readonly JsonTest[]): TestStatus {
+  const statuses = tests.map((test) => test.status);
   // "flaky" means it failed at least once, so the leak did reproduce.
   if (statuses.some((status) => status === "unexpected" || status === "flaky")) {
     return "failed";
@@ -528,6 +521,6 @@ function specStatus(spec: JsonSpec): TestStatus {
   // Never guess: an unknown status read as "passed" sends the search into the
   // wrong half and names an innocent test.
   throw new Error(
-    `Unrecognised Playwright status for "${spec.title}": ${statuses.join(", ")}`,
+    `Unrecognised Playwright status for "${title}": ${statuses.join(", ")}`,
   );
 }
