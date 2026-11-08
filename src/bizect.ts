@@ -1,3 +1,7 @@
+export function isValidSteps(steps: string): boolean {
+  return /^[ab]*$/u.test(steps);
+}
+
 /**
  * Select the next partition for the leak finder's binary search.
  *
@@ -11,7 +15,7 @@
  * bizect([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "ba") // [5, 6, 9]
  */
 export function bizect<T>(items: readonly T[], steps = ""): T[] {
-  if (!/^[ab]*$/u.test(steps)) {
+  if (!isValidSteps(steps)) {
     throw new Error(`Invalid steps "${steps}": only "a" and "b" are allowed`);
   }
   if (items.length === 0) {

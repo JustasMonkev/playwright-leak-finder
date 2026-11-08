@@ -150,10 +150,8 @@ export class LeakFinder {
       };
     }
 
-    const next: LeakFinderState =
-      target.status === "failed"
-        ? { ...state, steps: `${state.steps}a` }
-        : { ...state, steps: stepsAfterTargetPassed(state.steps) };
+    const steps = target.status === "failed" ? `${state.steps}a` : stepsAfterTargetPassed(state.steps);
+    const next: LeakFinderState = { ...state, steps };
     await this.store.save(next);
     // The saved steps always end in "a" (bisect the first half of the pool
     // narrowed so far); dropping that final step yields the pool itself.

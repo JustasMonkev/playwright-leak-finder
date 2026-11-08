@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { isValidSteps } from "./bizect";
 
 export interface SuiteItem {
   id: string;
@@ -98,7 +99,7 @@ function isState(value: unknown): value is LeakFinderState {
   const { steps, target, items } = value;
   if (
     typeof steps !== "string" ||
-    !/^[ab]*$/u.test(steps) ||
+    !isValidSteps(steps) ||
     (target !== null && typeof target !== "string") ||
     !Array.isArray(items) ||
     !items.every(isSuiteItem)
