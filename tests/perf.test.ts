@@ -103,7 +103,6 @@ describe("performance", () => {
       })),
       target,
     ];
-    // First, middle and last suspect exercise both bisection branches.
     for (const leakerIndex of [0, 5_000, 9_999]) {
       const leaker = items[leakerIndex]!;
       const finder = new LeakFinder(
