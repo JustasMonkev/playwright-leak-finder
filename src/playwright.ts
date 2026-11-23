@@ -1,9 +1,10 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { copyFile, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
-import { readReport } from "./playwright-report";
+import { fileURLToPath } from "node:url";
+import type { ProjectReport } from "./playwright-report";
 
 export interface TestItem {
   /** Stable id: relative file path plus the full title path. */
@@ -23,7 +24,7 @@ export interface TestResult {
 
 export interface RunOutcome {
   exitCode: number;
-  /** Results in declaration order, one entry per test. */
+  /** One verdict per declaration in first-start order; unstarted tests follow in collection order. */
   results: TestResult[];
 }
 
@@ -55,10 +56,9 @@ export interface TestRunner {
 }
 
 /**
- * Runs `playwright test` as a child process and reads back its JSON report.
+ * Runs `playwright test` as a child process and reads back its test verdicts.
  *
- * Tests always run with a single worker so that execution order matches
- * declaration order — a prerequisite for bisecting leaked state.
+ * Tests always run with a single worker so that execution order is observable.
  */
 export class PlaywrightRunner implements TestRunner {
   private readonly cwd: string;
@@ -88,18 +88,31 @@ export class PlaywrightRunner implements TestRunner {
   ): Promise<RunOutcome> {
     assertUsableArgs(passthroughArgs);
     const projects = selectedProjects(passthroughArgs);
-    const args = [
-      "test",
-      `--reporter=${quiet ? "json" : "list,json"}`,
-      ...controlledArgs,
-      ...passthroughArgs,
-    ];
     const outputDir = await mkdtemp(
       path.join(os.tmpdir(), "playwright-leak-finder-"),
     );
     const outputFile = path.join(outputDir, "report.json");
     try {
-      const outcome = await this.spawnPlaywright(args, outputFile, quiet);
+      // Use the sibling .ts in source checkouts and .mjs in the installed build.
+      const moduleFile = fileURLToPath(import.meta.url);
+      const extension = path.extname(moduleFile);
+      const reporter = path.join(path.dirname(moduleFile), `playwright-report${extension}`);
+      const env: NodeJS.ProcessEnv = { ...process.env, PLAYWRIGHT_LEAK_FINDER_REPORT: outputFile };
+      let reporterArg = reporter.includes(",") ? path.relative(this.cwd, reporter) : reporter;
+      if (reporterArg.includes(",")) {
+        // Playwright splits --reporter on commas without escaping. For an
+        // unrelated consumer cwd, resolve a private copy by module name.
+        reporterArg = path.basename(outputDir) + extension;
+        await copyFile(reporter, path.join(outputDir, reporterArg));
+        env.NODE_PATH = [outputDir, env.NODE_PATH].filter(Boolean).join(path.delimiter);
+      }
+      const args = [
+        "test",
+        `--reporter=${quiet ? "" : "list,"}${reporterArg}`,
+        ...controlledArgs,
+        ...passthroughArgs,
+      ];
+      const outcome = await this.spawnPlaywright(args, env, quiet);
       // Programmatic consumers may have their own signal handler. Reject once
       // cleanup has run; only the CLI layer translates this back into process
       // termination, so library use never re-dispatches a consumer's signal.
@@ -116,7 +129,7 @@ export class PlaywrightRunner implements TestRunner {
 
   private spawnPlaywright(
     args: string[],
-    jsonOutputFile: string,
+    env: NodeJS.ProcessEnv,
     quiet: boolean,
   ): Promise<{ exitCode: number; forwardedSignal?: NodeJS.Signals }> {
     const cli = this.resolveCli();
@@ -124,7 +137,7 @@ export class PlaywrightRunner implements TestRunner {
       const child = spawn(process.execPath, [cli, ...args], {
         cwd: this.cwd,
         stdio: ["ignore", quiet ? "ignore" : "inherit", "inherit"],
-        env: { ...process.env, PLAYWRIGHT_JSON_OUTPUT_NAME: jsonOutputFile },
+        env,
       });
       // Without this a terminating signal leaves `playwright test` — and its
       // browsers — running, and skips the temp-report cleanup in execute()'s
@@ -208,8 +221,8 @@ function locationArg({ file, line }: { file: string; line: number }): string {
 /**
  * Flags the search sets itself, or that break its premises. Playwright's
  * parser lets the last occurrence win, so a forwarded copy would silently
- * take over: `--workers=2` breaks declaration order, `--reporter=list`
- * suppresses the JSON report, `--retries` turns a failure into a `flaky`
+ * take over: `--workers=2` allows tests to overlap, `--reporter=list`
+ * suppresses the leak finder report, `--retries` turns a failure into a `flaky`
  * pass, `--shard`/`--repeat-each` change which tests run and under which id,
  * `--last-failed` changes between search steps, and interactive UI/debug
  * options never produce a usable report.
@@ -339,11 +352,57 @@ function projectPattern(name: string): RegExp {
     .map(escapeRegex)
     .join(".*");
   // Playwright matches --project names case-insensitively. Mirror that when
-  // filtering its JSON report so selected tests do not disappear after the
+  // filtering its report so selected tests do not disappear after the
   // CLI accepted the user's spelling.
   return new RegExp(`^${pattern}$`, "iu");
 }
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+async function readReport(
+  file: string,
+  exitCode: number,
+  projects: readonly RegExp[] | undefined,
+): Promise<TestResult[]> {
+  let reports: ProjectReport[];
+  try {
+    // The child writes this private file using the same ProjectReport contract.
+    reports = JSON.parse(await readFile(file, "utf8")) as ProjectReport[];
+  } catch (cause) {
+    throw new Error(
+      `Playwright exited with code ${exitCode} without producing a JSON report`,
+      { cause },
+    );
+  }
+
+  const selected = reports.filter(({ name }) =>
+    !projects || projects.some((pattern) => pattern.test(name)),
+  );
+  // A failed setup can prevent every selected test from running. If even
+  // a deliberately skipped test was scheduled, the failure may be a teardown.
+  if (selected.length < reports.length && !selected.some((report) => report.scheduled)) {
+    const failures: string[] = [];
+    for (const report of reports) {
+      if (selected.includes(report)) continue;
+      for (const test of report.results) {
+        if (test.status === "failed") failures.push(`  [${report.name}] ${test.id}`);
+      }
+    }
+    if (failures.length) {
+      throw new Error(
+        "A Playwright dependency project failed before the selected project could run:\n" +
+          failures.join("\n"),
+      );
+    }
+  }
+  if (selected.length > 1) {
+    throw new Error(
+      `This run covers ${selected.length} Playwright projects ` +
+        `(${selected.map((project) => project.name).join(", ")}), so every test runs more than once and ` +
+        "there is no single order to bisect. Re-run with --project=<name>.",
+    );
+  }
+  return selected[0]?.results ?? [];
 }
