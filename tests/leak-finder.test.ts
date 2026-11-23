@@ -84,10 +84,11 @@ const leakySuite = () =>
 describe("LeakFinder", () => {
   it.each([
     { name: "a duplicate replacing a missing suspect", steps: "a", indices: [0, 0, 4] },
+    { name: "two selected declarations sharing an id", steps: "a", indices: [0, 1, 4], sameId: true },
     { name: "reordered suspects", steps: "a", indices: [1, 0, 4] },
     { name: "a suspect after the target", steps: "aa", indices: [4, 0] },
-  ])("does not advance or name a culprit for $name", async ({ steps, indices }) => {
-    const items = suite(["one", "two", "three", "four", "target"]);
+  ])("does not advance or name a culprit for $name", async ({ steps, indices, sameId }) => {
+    const items = suite(["one", sameId ? "one" : "two", "three", "four", "target"]);
     const target = items[4]!.id;
     const store = new MemoryStateStore();
     await store.save({ items, target, steps });
