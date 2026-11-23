@@ -62,6 +62,19 @@ describe("CLI end-to-end", () => {
     expect(existsSync(stateFile(dir))).toBe(true);
   });
 
+  it("finds a writer that changes state before skipping at runtime", { timeout: 120_000 }, async () => {
+    const dir = await createProject({
+      "playwright.config.ts": CONFIG,
+      "skip.spec.ts": `import { expect, test } from "@playwright/test";
+        let dirty = false;
+        test("writer", () => { dirty = true; test.skip(); });
+        test("target", () => { expect(dirty).toBe(false); });`,
+    });
+    const result = await runCli(dir, "--auto");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("Leak found in: skip.spec.ts › writer");
+  });
+
   it("advances one step per invocation and persists state between runs", { timeout: 180_000 }, async () => {
     const dir = await leakyFixture();
 

@@ -54,6 +54,7 @@ describe("bizect", () => {
   });
 
   it("rejects steps other than a/b", () => {
+    expect(() => bizect(items, "ax")).toThrow('Invalid steps "ax": only "a" and "b" are allowed');
     expect(() => bizect([], "ax")).toThrow('Invalid steps "ax": only "a" and "b" are allowed');
   });
 });

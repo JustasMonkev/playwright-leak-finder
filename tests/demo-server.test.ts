@@ -45,6 +45,7 @@ it("rejects malformed or non-object JSON without creating or changing tasks", as
       ["{broken", "Invalid JSON"],
       ["null", "Expected a JSON object"],
       ["[]", "Expected a JSON object"],
+      ["42", "Expected a JSON object"],
     ] as const) {
       const rejected = await fetch(url, { method, body });
       expect(rejected.status).toBe(400);

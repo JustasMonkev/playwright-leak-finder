@@ -11,7 +11,18 @@ async function interrupt(args: string[], signal: NodeJS.Signals) {
     "package.json": '{ "type": "module" }\n',
     "playwright.config.ts":
       'import { defineConfig } from "@playwright/test";\n' +
-      'export default defineConfig({ testDir: "." });\n',
+      'export default defineConfig({ testDir: ".", globalSetup: "./observe-signal.cjs" });\n',
+    // Global setup runs in the Playwright CLI process, not a test worker.
+    "observe-signal.cjs": [
+      "module.exports = () => {",
+      "  const signal = process.env.SIGNAL_UNDER_TEST;",
+      "  process.once(signal, (received) => {",
+      '    require("node:fs").writeSync(1, `Playwright received ${received}\\n`);',
+      "    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);",
+      "  });",
+      '  console.log("Playwright signal listener ready");',
+      "};",
+    ].join("\n"),
     "hang.spec.ts":
       'import { test } from "@playwright/test";\n' +
       'test("waits for a signal", async () => await new Promise(() => {}));\n',
@@ -38,11 +49,10 @@ async function interrupt(args: string[], signal: NodeJS.Signals) {
     }
   });
 
-  // Playwright's own progress line means signal forwarding is installed.
   const lines = createInterface({ input: child.stdout, signal: AbortSignal.timeout(15_000) });
   let signaled = false;
   for await (const line of lines) {
-    if (line.includes("Running 1 test")) {
+    if (line === "Playwright signal listener ready") {
       signaled = child.kill(signal);
       break;
     }
@@ -51,6 +61,7 @@ async function interrupt(args: string[], signal: NodeJS.Signals) {
   const exit = await exited;
   const tempFiles = await readdir(tempDir);
   expect(tempFiles.filter((entry) => entry.startsWith("playwright-leak-finder-"))).toEqual([]);
+  expect(stdout.split(/\r?\n/u)).toContain(`Playwright received ${signal}`);
   return { ...exit, stdout };
 }
 

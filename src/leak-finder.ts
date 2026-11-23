@@ -34,24 +34,24 @@ export class LeakFinder {
 
   /** First run: execute the suite until something fails and remember it. */
   private async captureTarget(args: string[]): Promise<LeakFinderReport> {
-    const outcome = await this.runner.run({
+    const { results } = await this.runner.run({
       stopOnFirstFailure: true,
       passthroughArgs: args,
     });
-    if (outcome.results.length === 0) {
+    if (results.length === 0) {
       return done([
         "No tests were collected, so there is nothing to bisect.",
         "Check the config, project and filters you forwarded to `playwright test`.",
       ]);
     }
-    const failureIndex = outcome.results.findIndex((result) => result.status === "failed");
-    const failure = outcome.results[failureIndex];
+    const failureIndex = results.findIndex((result) => result.status === "failed");
+    const failure = results[failureIndex];
     if (!failure) {
       return done(["No test failed: there is no target to bisect."]);
     }
     // A test that fails alone has no leak to hunt; without this the search
     // would happily converge and blame whichever test it narrowed down to.
-    const alone = await this.runner.run({
+    const { results: isolated } = await this.runner.run({
       locations: [failure],
       passthroughArgs: args,
       // Quiet: a second "test5 passed" right after "test5 failed" reads as a
@@ -60,28 +60,18 @@ export class LeakFinder {
     });
     // Only trust this when the filter really did select just the target: with
     // loop-generated tests several can share its file:line.
-    const ranAlone = alone.results.length === 1 && alone.results[0]!;
-    if (ranAlone && ranAlone.id === failure.id && ranAlone.status === "failed") {
+    const alone = isolated.length === 1 ? isolated[0] : undefined;
+    if (alone?.id === failure.id && alone.status === "failed") {
       return done([
         `${failure.id} fails on its own, so no earlier test is leaking into it.`,
         "Fix that test first, then run the leak finder again.",
       ]);
     }
-    const items = [];
-    let suspects = failureIndex;
-    for (let i = 0; i < outcome.results.length; i++) {
-      const { id, file, line, status } = outcome.results[i]!;
-      if (i < failureIndex && status === "skipped") {
-        suspects--;
-        continue;
-      }
-      items.push({ id, file, line });
-    }
-    const state: LeakFinderState = { steps: "a", target: failure.id, items };
+    const state: LeakFinderState = { steps: "a", target: failure.id, items: results.map(snapshotItem) };
     await this.store.save(state);
     return progress([
       `Target set to: ${state.target}`,
-      `Suspects remaining: ${suspects}`,
+      `Suspects remaining: ${failureIndex}`,
       "Run the same command again to bisect the tests before the target.",
     ]);
   }
@@ -92,7 +82,7 @@ export class LeakFinder {
     args: string[],
   ): Promise<LeakFinderReport> {
     // Use snapshot to avoid a second Playwright spawn per step.
-    const items = state.items.length > 0 ? state.items : await this.runner.list(args);
+    const items = state.items.length > 0 ? state.items : (await this.runner.list(args)).map(snapshotItem);
     const targetIndex = items.findIndex((item) => item.id === state.target);
     if (targetIndex <= 0) {
       await this.runner.run({ passthroughArgs: args });
@@ -117,12 +107,12 @@ export class LeakFinder {
     }
     // Down to one suspect plus the target: if the target still fails, that's our leak.
     const leakCandidate = suspectCount === 1 ? items[range.start]!.id : null;
-    const outcome = await this.runner.run({
+    const { results } = await this.runner.run({
       locations: selectPartition(items, targetIndex, range),
       passthroughArgs: args,
     });
 
-    const target = outcome.results.find((result) => result.id === state.target);
+    const target = results.find((result) => result.id === state.target);
     if (!target || target.status === "skipped") {
       return done([
         "The target did not run, so this step is inconclusive.",
@@ -135,13 +125,13 @@ export class LeakFinder {
     // not select, which would pin the leak on an innocent test. Refuse to
     // answer rather than answer wrongly.
     if (
-      outcome.results.length !== suspectCount + 1 ||
-      outcome.results.at(-1) !== target ||
-      !ranSuspectsInOrder(outcome.results, items, range.start)
+      results.length !== suspectCount + 1 ||
+      results.at(-1)?.id !== state.target ||
+      !ranSuspectsInOrder(results, items, range.start)
     ) {
       return done([
         "The tests that ran are not the ones selected, so this step is inconclusive.",
-        "Either a spec file changed lines since the search started, or several tests share a file:line.",
+        "Check for changed test order, moved spec lines, or several tests sharing a file:line.",
         "Run --reset to start over.",
       ]);
     }
@@ -178,8 +168,8 @@ export class LeakFinder {
 function ranSuspectsInOrder(results: TestResult[], items: SuiteItem[], start: number): boolean {
   const seen = new Set<string>();
   for (let i = 0; i < results.length - 1; i++) {
-    const { id, status } = results[i]!;
-    if (status === "skipped" || id !== items[start + i]!.id || seen.has(id)) {
+    const { id } = results[i]!;
+    if (id !== items[start + i]!.id || seen.has(id)) {
       return false;
     }
     seen.add(id);
@@ -190,6 +180,10 @@ function ranSuspectsInOrder(results: TestResult[], items: SuiteItem[], start: nu
 /** The selected group passed: the leak hides in the other half, descend into it. */
 function stepsAfterTargetPassed(steps: string): string {
   return steps.endsWith("a") ? `${steps.slice(0, -1)}ba` : "aa";
+}
+
+function snapshotItem({ id, file, line }: SuiteItem): SuiteItem {
+  return { id, file, line };
 }
 
 function done(lines: string[]): LeakFinderReport {
