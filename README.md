@@ -139,9 +139,11 @@ guessing:
 - **A genuinely flaky target.** If the target fails for its own reasons rather
   than because of a leak, the first run catches it and stops. But a target
   that fails intermittently will send the search down the wrong half.
-- **Spec files edited mid-search.** The saved snapshot addresses tests by
-  `file:line`, so if lines shift the step is reported as inconclusive; run
-  `--reset` and start over.
+- **A replay that no longer matches the search.** Locations are selected by
+  `file:line`. If a file edit, a shared line, or a change in test order or
+  skips means the selected tests don't run in the original order, the step
+  is inconclusive. The saved search does not advance; run `--reset` to
+  capture a new one.
 
 ### CLI options
 

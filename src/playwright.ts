@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import { readReport } from "./playwright-report";
 
 export interface TestItem {
   /** Stable id: relative file path plus the full title path. */
@@ -68,66 +69,46 @@ export class PlaywrightRunner implements TestRunner {
   }
 
   async list(passthroughArgs: string[] = []): Promise<TestItem[]> {
-    assertUsableArgs(passthroughArgs);
-    const { specs } = await this.execute(["--list", ...passthroughArgs], true);
-    return specs.map(({ id, file, line }) => ({ id, file, line }));
+    const { results } = await this.execute(["--list"], passthroughArgs, true);
+    return results.map(({ id, file, line }) => ({ id, file, line }));
   }
 
   async run(options: RunOptions = {}): Promise<RunOutcome> {
     const passthroughArgs = options.passthroughArgs ?? [];
-    assertUsableArgs(passthroughArgs);
-    const args = [
-      "--workers=1",
-      ...(options.stopOnFirstFailure ? ["--max-failures=1"] : []),
-      ...(options.locations ?? []).map(locationArg),
-      ...passthroughArgs,
-    ];
-    const { specs, exitCode } = await this.execute(args, options.quiet ?? false);
-    return {
-      exitCode,
-      results: specs.map(({ id, file, line, status }) => ({ id, file, line, status })),
-    };
+    const args = ["--workers=1"];
+    if (options.stopOnFirstFailure) args.push("--max-failures=1");
+    for (const location of options.locations ?? []) args.push(locationArg(location));
+    return this.execute(args, passthroughArgs, options.quiet ?? false);
   }
 
   private async execute(
-    args: string[],
+    controlledArgs: readonly string[],
+    passthroughArgs: readonly string[],
     quiet: boolean,
-  ): Promise<{ specs: FlatSpec[]; exitCode: number }> {
+  ): Promise<RunOutcome> {
+    assertUsableArgs(passthroughArgs);
+    const projects = selectedProjects(passthroughArgs);
+    const args = [
+      "test",
+      `--reporter=${quiet ? "json" : "list,json"}`,
+      ...controlledArgs,
+      ...passthroughArgs,
+    ];
     const outputDir = await mkdtemp(
       path.join(os.tmpdir(), "playwright-leak-finder-"),
     );
     const outputFile = path.join(outputDir, "report.json");
     try {
-      const outcome = await this.spawnPlaywright(
-        ["test", `--reporter=${quiet ? "json" : "list,json"}`, ...args],
-        outputFile,
-        quiet,
-      );
+      const outcome = await this.spawnPlaywright(args, outputFile, quiet);
       // Programmatic consumers may have their own signal handler. Reject once
       // cleanup has run; only the CLI layer translates this back into process
       // termination, so library use never re-dispatches a consumer's signal.
       if (outcome.forwardedSignal !== undefined) {
         throw new PlaywrightInterruptedError(outcome.forwardedSignal);
       }
-      const report = await readReport(outputFile, outcome.exitCode);
-      const projects = selectedProjects(args);
-      const specs = flattenSpecs(report, projects);
-      // A teardown project is outside the selected project too, but it runs
-      // after the selected tests. Once Playwright scheduled at least one
-      // selected test (including an intentional skip), keep those useful
-      // results rather than mislabelling a later teardown failure. Selected
-      // tests blocked by a setup failure have no result entries at all.
-      const dependencyFailures = specs.some((spec) => spec.wasScheduled)
-        ? []
-        : failuresOutsideProjects(report, projects);
-      if (dependencyFailures.length > 0) {
-        throw new Error(
-          "A Playwright dependency project failed before the selected project could run:\n" +
-            dependencyFailures.map((failure) => `  ${failure}`).join("\n"),
-        );
-      }
-      assertSingleProject(specs);
-      return { specs, exitCode: outcome.exitCode };
+      const { exitCode } = outcome;
+      const results = await readReport(outputFile, exitCode, projects);
+      return { exitCode, results };
     } finally {
       await rm(outputDir, { recursive: true, force: true });
     }
@@ -259,6 +240,7 @@ const RESERVED_ARGS = [
  * widen every bisection run.
  */
 const VALUE_TAKING_ARGS = new Set([
+  "--add-reporter",
   "--browser",
   "-c",
   "--config",
@@ -327,65 +309,6 @@ function assertUsableArgs(args: readonly string[]): void {
   }
 }
 
-async function readReport(file: string, exitCode: number): Promise<JsonReport> {
-  try {
-    // SAFETY: Only Playwright's JSON reporter writes this file in our private temporary directory.
-    return JSON.parse(await readFile(file, "utf8")) as JsonReport;
-  } catch (cause) {
-    throw new Error(
-      `Playwright exited with code ${exitCode} without producing a JSON report`,
-      { cause },
-    );
-  }
-}
-
-// Minimal shape of Playwright's JSON reporter output.
-interface JsonReport {
-  suites?: JsonSuite[];
-}
-
-interface JsonSuite {
-  title: string;
-  suites?: JsonSuite[];
-  specs?: JsonSpec[];
-}
-
-interface JsonTest {
-  status?: string;
-  projectName?: string;
-  /** Empty when a dependency failure prevented this test from being scheduled. */
-  results?: unknown[];
-}
-
-interface JsonSpec {
-  title: string;
-  file: string;
-  line: number;
-  tests?: JsonTest[];
-}
-
-interface FlatSpec extends TestItem {
-  status: TestStatus;
-  projects: string[];
-  wasScheduled: boolean;
-}
-
-/**
- * A run covering several projects repeats every spec once per project, so
- * there is no single declaration order to bisect and ids are ambiguous.
- * Refuse rather than search a suite whose ordering premise does not hold.
- */
-function assertSingleProject(specs: FlatSpec[]): void {
-  const projects = new Set(specs.flatMap((spec) => spec.projects));
-  if (projects.size > 1) {
-    throw new Error(
-      `This run covers ${projects.size} Playwright projects ` +
-        `(${[...projects].join(", ")}), so every test runs more than once and ` +
-        "there is no single order to bisect. Re-run with --project=<name>.",
-    );
-  }
-}
-
 /**
  * Returns the projects explicitly requested on the command line. Playwright
  * also reports setup/dependency projects when one project is selected; those
@@ -393,24 +316,21 @@ function assertSingleProject(specs: FlatSpec[]): void {
  * bisected.
  */
 function selectedProjects(args: readonly string[]): RegExp[] | undefined {
-  const names: string[] = [];
+  const patterns: RegExp[] = [];
   let readsProjectNames = false;
   for (const arg of args) {
     if (arg === "--project") {
       readsProjectNames = true;
     } else if (arg.startsWith("--project=")) {
-      names.push(arg.slice("--project=".length));
+      patterns.push(projectPattern(arg.slice("--project=".length)));
       readsProjectNames = false;
     } else if (arg.startsWith("-")) {
       readsProjectNames = false;
     } else if (readsProjectNames) {
-      names.push(arg);
+      patterns.push(projectPattern(arg));
     }
   }
-  if (names.length === 0) {
-    return undefined;
-  }
-  return names.map(projectPattern);
+  return patterns.length ? patterns : undefined;
 }
 
 function projectPattern(name: string): RegExp {
@@ -426,101 +346,4 @@ function projectPattern(name: string): RegExp {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function failuresOutsideProjects(
-  report: JsonReport,
-  selected: readonly RegExp[] | undefined,
-): string[] {
-  if (selected === undefined) {
-    return [];
-  }
-  const projectNames = new Set(
-    flattenSpecs(report).flatMap((spec) => spec.projects),
-  );
-  return [...projectNames]
-    .filter((name) => !selected.some((pattern) => pattern.test(name)))
-    .flatMap((name) =>
-      flattenSpecs(report, [new RegExp(`^${escapeRegex(name)}$`, "u")])
-        .filter((spec) => spec.status === "failed")
-        .map((spec) => `[${name}] ${spec.id}`),
-    );
-}
-
-function flattenSpecs(
-  report: JsonReport,
-  projects?: readonly RegExp[],
-): FlatSpec[] {
-  // Top-level suites represent files; nested suites are describe blocks.
-  // The report keeps a suite's own specs and its describe blocks in separate
-  // arrays, losing their interleaving, so sort by line to recover declaration
-  // order — which is the execution order the whole search depends on.
-  return (report.suites ?? []).flatMap((fileSuite) =>
-    specsOf(fileSuite, [], projects).sort((a, b) => a.line - b.line),
-  );
-}
-
-function specsOf(
-  suite: JsonSuite,
-  describePath: string[],
-  projects?: readonly RegExp[],
-): FlatSpec[] {
-  const own = (suite.specs ?? []).flatMap((spec) => {
-    const flattened = toFlatSpec(spec, describePath, projects);
-    return flattened === null ? [] : [flattened];
-  });
-  const nested = (suite.suites ?? []).flatMap((child) =>
-    specsOf(child, [...describePath, child.title], projects),
-  );
-  return [...own, ...nested];
-}
-
-function toFlatSpec(
-  spec: JsonSpec,
-  describePath: string[],
-  projects?: readonly RegExp[],
-): FlatSpec | null {
-  const tests = (spec.tests ?? []).filter(
-    (test) =>
-      projects === undefined ||
-      projects.some((pattern) => pattern.test(test.projectName ?? "")),
-  );
-  if (projects !== undefined && tests.length === 0) {
-    return null;
-  }
-  return {
-    id: `${spec.file} › ${[...describePath, spec.title].join(" › ")}`,
-    file: spec.file,
-    line: spec.line,
-    status: specStatus(spec.title, tests),
-    projects: tests.map((test) => test.projectName ?? ""),
-    // Playwright emits a result even for an intentional test.skip/fixme. A
-    // skipped test with no results was blocked before scheduling, typically by
-    // a failed setup dependency. This also distinguishes a later teardown
-    // failure without needing unavailable dependency metadata in JSON config.
-    wasScheduled: tests.some((test) => (test.results?.length ?? 0) > 0),
-  };
-}
-
-function specStatus(title: string, tests: readonly JsonTest[]): TestStatus {
-  const statuses = tests.map((test) => test.status);
-  // "flaky" means it failed at least once, so the leak did reproduce.
-  if (statuses.some((status) => status === "unexpected" || status === "flaky")) {
-    return "failed";
-  }
-  // An empty list means nothing ran, which the search treats as inconclusive.
-  if (statuses.every((status) => status === "skipped")) {
-    return "skipped";
-  }
-  // Multi-project configs report one entry per project, so a spec can be
-  // "expected" in one and "skipped" in another. Any pass without a failure
-  // is a pass.
-  if (statuses.some((status) => status === "expected")) {
-    return "passed";
-  }
-  // Never guess: an unknown status read as "passed" sends the search into the
-  // wrong half and names an innocent test.
-  throw new Error(
-    `Unrecognised Playwright status for "${title}": ${statuses.join(", ")}`,
-  );
 }

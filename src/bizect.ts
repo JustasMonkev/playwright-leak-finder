@@ -15,19 +15,48 @@ export function isValidSteps(steps: string): boolean {
  * bizect([0, 1, 2, 3, 4, 5, 6, 7, 8, 9], "ba") // [5, 6, 9]
  */
 export function bizect<T>(items: readonly T[], steps = ""): T[] {
+  if (steps === "") return [...items];
+  const targetIndex = items.length - 1;
+  const range = suspectRange(Math.max(0, targetIndex), steps);
+  return selectPartition(items, targetIndex, range);
+}
+
+interface SuspectRange {
+  start: number;
+  end: number;
+}
+
+/** Half-open suspect range; the target is not part of the range. */
+export function suspectRange(suspectCount: number, steps: string): SuspectRange {
   if (!isValidSteps(steps)) {
     throw new Error(`Invalid steps "${steps}": only "a" and "b" are allowed`);
   }
-  if (items.length === 0) {
-    return [];
-  }
-  const target = items[items.length - 1]!;
-  let selection = [...items];
+  let start = 0;
+  let end = suspectCount;
   for (const step of steps) {
-    const middle = Math.floor(selection.length / 2);
-    selection =
-      step === "a" ? selection.slice(0, middle) : selection.slice(middle, -1);
-    selection.push(target);
+    // Odd-sized pools give the extra suspect to the first half.
+    const middle = start + Math.ceil((end - start) / 2);
+    if (step === "a") {
+      end = middle;
+    } else {
+      start = middle;
+    }
   }
+  return { start, end };
+}
+
+export function selectPartition<T>(
+  items: readonly T[],
+  targetIndex: number,
+  { start, end }: SuspectRange,
+): T[] {
+  if (targetIndex < 0) return [];
+  const selection = new Array<T>(end - start + 1);
+  // Copy by index, not slice: a hole in the input is an explicit undefined
+  // in the returned array, just as it is when spreading the input.
+  for (let i = start; i < end; i++) {
+    selection[i - start] = items[i]!;
+  }
+  selection[end - start] = items[targetIndex]!;
   return selection;
 }

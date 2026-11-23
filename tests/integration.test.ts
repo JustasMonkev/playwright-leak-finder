@@ -1,38 +1,31 @@
-import { cp, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import {
   FileStateStore,
   LeakFinder,
   PlaywrightRunner,
 } from "playwright-leak-finder";
-
-const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../..");
+import { createProject, repoRoot } from "./e2e-helpers";
 
 // Runs the real `playwright test` CLI against a copy of the leaky
 // fixture suite.
 // The fixture lives inside the repo so the spec can resolve @playwright/test.
 describe("leak finder against a real Playwright project", () => {
   let fixtureDir: string;
-  let finder: LeakFinder;
 
-  beforeAll(async () => {
-    fixtureDir = await mkdtemp(path.join(repoRoot, "tests", ".tmp-fixture-"));
+  beforeEach(async () => {
+    fixtureDir = await createProject();
     await cp(path.join(repoRoot, "tests", "fixtures", "leaky-suite"), fixtureDir, {
       recursive: true,
     });
-    finder = new LeakFinder(
-      new PlaywrightRunner({ cwd: fixtureDir }),
-      new FileStateStore(path.join(fixtureDir, ".playwright-leak-finder")),
-    );
-  });
-
-  afterAll(async () => {
-    await rm(fixtureDir, { recursive: true, force: true });
   });
 
   it("finds the leaking test in three runs", { timeout: 180_000 }, async () => {
+    const finder = new LeakFinder(
+      new PlaywrightRunner({ cwd: fixtureDir }),
+      new FileStateStore(path.join(fixtureDir, ".playwright-leak-finder")),
+    );
     const first = await finder.run();
     expect(first.done).toBe(false);
     expect(first.lines).toEqual([
@@ -168,14 +161,6 @@ describe("leak finder against a real Playwright project", () => {
 // playwright: leak first (fail-descend), leak last (smallest pool), and a
 // leak inside a describe block (nested suite ids).
 describe("hunt scenarios against a real Playwright project", () => {
-  const cleanups: Array<() => Promise<void>> = [];
-
-  afterAll(async () => {
-    for (const cleanup of cleanups) {
-      await cleanup();
-    }
-  });
-
   const CONFIG =
     'import { defineConfig } from "@playwright/test";\n' +
     'export default defineConfig({ testDir: "." });\n';
@@ -183,11 +168,7 @@ describe("hunt scenarios against a real Playwright project", () => {
   async function huntFixture(
     files: Record<string, string>,
   ): Promise<{ finder: LeakFinder; store: FileStateStore }> {
-    const dir = await mkdtemp(path.join(repoRoot, "tests", ".tmp-fixture-"));
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
-    for (const [name, content] of Object.entries(files)) {
-      await writeFile(path.join(dir, name), content);
-    }
+    const dir = await createProject(files);
     const store = new FileStateStore(path.join(dir, ".playwright-leak-finder"));
     return {
       finder: new LeakFinder(new PlaywrightRunner({ cwd: dir }), store),

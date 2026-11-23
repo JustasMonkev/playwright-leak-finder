@@ -52,16 +52,13 @@ export class FileStateStore implements StateStore {
 
   async save(state: LeakFinderState): Promise<void> {
     await mkdir(path.dirname(this.file), { recursive: true });
-    // Write then rename, so an interrupted run cannot leave truncated JSON
-    // that load() would silently discard along with the whole search. Each
-    // writer gets its own temporary file so concurrent CLI runs cannot rename
-    // the same path out from under each other.
-    const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    const temporary = `${this.file}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+      await writeFile(temporary, `${JSON.stringify(state)}\n`);
       await rename(temporary, this.file);
-    } finally {
+    } catch (error) {
       await rm(temporary, { force: true });
+      throw error;
     }
   }
 

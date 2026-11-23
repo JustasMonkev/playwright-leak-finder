@@ -82,6 +82,69 @@ const leakySuite = () =>
   );
 
 describe("LeakFinder", () => {
+  it.each([
+    { name: "a duplicate replacing a missing suspect", steps: "a", indices: [0, 0, 4] },
+    { name: "reordered suspects", steps: "a", indices: [1, 0, 4] },
+    { name: "a suspect after the target", steps: "aa", indices: [4, 0] },
+    { name: "a skipped suspect with a failing target", steps: "aa", indices: [0, 4], skip: true },
+    { name: "a skipped suspect with a passing target", steps: "aa", indices: [0, 4], skip: true, pass: true },
+  ])("does not advance or name a culprit for $name", async ({ steps, indices, skip, pass }) => {
+    const items = suite(["one", "two", "three", "four", "target"]);
+    const target = items[4]!.id;
+    const targetStatus = pass ? "passed" : "failed";
+    const suspectStatus = skip ? "skipped" : "passed";
+    const store = new MemoryStateStore();
+    await store.save({ items, target, steps });
+    const runner: TestRunner = {
+      list: async () => items,
+      run: async () => ({
+        exitCode: pass ? 0 : 1,
+        results: indices.map((i) => ({
+          ...items[i]!,
+          status: i === 4 ? targetStatus : suspectStatus,
+        })),
+      }),
+    };
+
+    const report = await new LeakFinder(runner, store).run();
+
+    expect(report.done).toBe(true);
+    expect(report.leakCandidate).toBeNull();
+    expect(report.lines[0]).toContain("inconclusive");
+    expect((await store.load()).steps).toBe(steps);
+  });
+
+  it("does not include already skipped tests in a new search's suspects", async () => {
+    const items = suite(["disabled", "writer", "target"]);
+    const leaky = new FakeRunner(items, items[1]!.id, items[2]!.id);
+    const runner: TestRunner = {
+      list: async () => items,
+      run: async (options) => {
+        const outcome = await leaky.run(options);
+        const disabled = outcome.results.find((result) => result.id === items[0]!.id);
+        if (disabled) disabled.status = "skipped";
+        return outcome;
+      },
+    };
+    const finder = new LeakFinder(runner, new MemoryStateStore());
+
+    expect((await finder.run()).lines).toContain("Suspects remaining: 1");
+    expect((await finder.run()).leakCandidate).toBe(items[1]!.id);
+  });
+
+  it("resumes a legacy search and saves the collected suite with the next step", async () => {
+    const items = suite(["one", "two", "three", "four", "five", "target", "after"]);
+    const target = items[5]!.id;
+    const runner = new FakeRunner(items, items[0]!.id, target);
+    const store = new MemoryStateStore();
+    await store.save({ steps: "bb", target, items: [] });
+
+    const report = await new LeakFinder(runner, store).run();
+
+    expect(report.lines).toContain("Suspects remaining: 3");
+    expect(await store.load()).toEqual({ items, target, steps: "aa" });
+  });
+
   it("sets the target on the first failing run", async () => {
     const finder = new LeakFinder(leakySuite(), new MemoryStateStore());
 

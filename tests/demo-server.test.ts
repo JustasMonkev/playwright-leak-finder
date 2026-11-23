@@ -24,7 +24,7 @@ afterAll(async () => {
   }
 });
 
-it("rejects malformed JSON without creating or changing tasks", async () => {
+it("rejects malformed or non-object JSON without creating or changing tasks", async () => {
   const created = await fetch(`${baseUrl}/api/tasks`, {
     method: "POST",
     body: JSON.stringify({ title: "Keep me" }),
@@ -41,9 +41,15 @@ it("rejects malformed JSON without creating or changing tasks", async () => {
   expect(await updated.json()).toEqual(updatedTask);
 
   for (const [url, method] of [[taskUrl, "PATCH"], [`${baseUrl}/api/tasks`, "POST"]] as const) {
-    const rejected = await fetch(url, { method, body: "{broken" });
-    expect(rejected.status).toBe(400);
-    expect(await rejected.json()).toEqual({ error: "Invalid JSON" });
+    for (const [body, error] of [
+      ["{broken", "Invalid JSON"],
+      ["null", "Expected a JSON object"],
+      ["[]", "Expected a JSON object"],
+    ] as const) {
+      const rejected = await fetch(url, { method, body });
+      expect(rejected.status).toBe(400);
+      expect(await rejected.json()).toEqual({ error });
+    }
   }
   expect(await (await fetch(`${baseUrl}/api/tasks`)).json()).toEqual([updatedTask]);
 });

@@ -41,11 +41,19 @@ describe("bizect", () => {
     expect(result).not.toBe(items);
   });
 
+  it("materializes holes as undefined, including a missing target", () => {
+    const sparse = new Array<number>(5);
+    sparse[1] = 1;
+    expect(bizect(sparse)).toStrictEqual([undefined, 1, undefined, undefined, undefined]);
+    expect(bizect(sparse, "a")).toStrictEqual([undefined, 1, undefined]);
+    expect(bizect(sparse, "b")).toStrictEqual([undefined, undefined, undefined]);
+  });
+
   it("returns an empty selection for no items", () => {
     expect(bizect([], "a")).toEqual([]);
   });
 
   it("rejects steps other than a/b", () => {
-    expect(() => bizect(items, "ax")).toThrow(/Invalid steps/);
+    expect(() => bizect([], "ax")).toThrow('Invalid steps "ax": only "a" and "b" are allowed');
   });
 });

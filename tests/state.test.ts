@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -36,8 +36,14 @@ describe("FileStateStore", () => {
 
   it("loads a legacy active state without a suite snapshot", async () => {
     const state = { steps: "a", target: "demo.spec.ts › test5", items: [] };
-    await store.save(state);
+    await writeFile(path.join(directory, "state.json"), JSON.stringify(state, null, 2));
     expect(await store.load()).toEqual(state);
+  });
+
+  it("removes the temporary snapshot when it cannot replace the destination", async () => {
+    await mkdir(path.join(directory, "state.json"));
+    await expect(store.save(emptyState())).rejects.toThrow();
+    expect(await readdir(directory)).toEqual(["state.json"]);
   });
 
   it("falls back to an empty state on a corrupt file", async () => {

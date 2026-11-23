@@ -28,6 +28,6 @@ describe("parseCliArgs", () => {
     [["--help"], "help"],
     [["-h"], "help"],
   ])("recognizes %j as the %s command", (argv, command) => {
-    expect(parseCliArgs(argv).command).toBe(command);
+    expect(parseCliArgs(argv)).toEqual({ command, auto: false, playwrightArgs: [] });
   });
 });

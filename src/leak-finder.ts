@@ -1,6 +1,6 @@
-import { bizect } from "./bizect";
-import type { TestRunner } from "./playwright";
-import type { LeakFinderState, StateStore } from "./state";
+import { selectPartition, suspectRange } from "./bizect";
+import type { TestResult, TestRunner } from "./playwright";
+import type { LeakFinderState, StateStore, SuiteItem } from "./state";
 
 export interface LeakFinderReport {
   /** True when running again would not advance the search. */
@@ -44,7 +44,8 @@ export class LeakFinder {
         "Check the config, project and filters you forwarded to `playwright test`.",
       ]);
     }
-    const failure = outcome.results.find((result) => result.status === "failed");
+    const failureIndex = outcome.results.findIndex((result) => result.status === "failed");
+    const failure = outcome.results[failureIndex];
     if (!failure) {
       return done(["No test failed: there is no target to bisect."]);
     }
@@ -66,14 +67,21 @@ export class LeakFinder {
         "Fix that test first, then run the leak finder again.",
       ]);
     }
-    const items = outcome.results.map(({ id, file, line }) => ({ id, file, line }));
+    const items = [];
+    let suspects = failureIndex;
+    for (let i = 0; i < outcome.results.length; i++) {
+      const { id, file, line, status } = outcome.results[i]!;
+      if (i < failureIndex && status === "skipped") {
+        suspects--;
+        continue;
+      }
+      items.push({ id, file, line });
+    }
     const state: LeakFinderState = { steps: "a", target: failure.id, items };
     await this.store.save(state);
     return progress([
       `Target set to: ${state.target}`,
-      // Tests after the target can appear in the report as skipped; only the
-      // ones that ran before it are suspects.
-      `Suspects remaining: ${outcome.results.indexOf(failure)}`,
+      `Suspects remaining: ${suspects}`,
       "Run the same command again to bisect the tests before the target.",
     ]);
   }
@@ -95,12 +103,12 @@ export class LeakFinder {
       return done([reason, `Current target is: ${state.target}`]);
     }
 
-    const pool = items.slice(0, targetIndex + 1);
-    const selection = bizect(pool, state.steps);
+    const range = suspectRange(targetIndex, state.steps);
+    const suspectCount = range.end - range.start;
     // Nothing left to suspect: the halves have been exhausted without the
     // target failing, so no single earlier test reproduces it. Without this
     // the search keeps appending steps and re-running the target forever.
-    if (selection.length < 2) {
+    if (suspectCount === 0) {
       return done([
         "The search cannot narrow any further: no single earlier test makes the target fail.",
         "The leak probably needs more than one test, so bisection cannot pin it down.",
@@ -108,9 +116,9 @@ export class LeakFinder {
       ]);
     }
     // Down to one suspect plus the target: if the target still fails, that's our leak.
-    const leakCandidate = selection.length === 2 ? selection[0]!.id : null;
+    const leakCandidate = suspectCount === 1 ? items[range.start]!.id : null;
     const outcome = await this.runner.run({
-      locations: selection,
+      locations: selectPartition(items, targetIndex, range),
       passthroughArgs: args,
     });
 
@@ -126,10 +134,10 @@ export class LeakFinder {
     // and edits shift lines under the saved snapshot. Either runs tests we did
     // not select, which would pin the leak on an innocent test. Refuse to
     // answer rather than answer wrongly.
-    const selected = new Set(selection.map((item) => item.id));
     if (
-      outcome.results.length !== selected.size ||
-      outcome.results.some((result) => !selected.has(result.id))
+      outcome.results.length !== suspectCount + 1 ||
+      outcome.results.at(-1) !== target ||
+      !ranSuspectsInOrder(outcome.results, items, range.start)
     ) {
       return done([
         "The tests that ran are not the ones selected, so this step is inconclusive.",
@@ -151,19 +159,32 @@ export class LeakFinder {
     }
 
     const steps = target.status === "failed" ? `${state.steps}a` : stepsAfterTargetPassed(state.steps);
-    const next: LeakFinderState = { ...state, steps };
+    const next: LeakFinderState = { ...state, steps, items };
     await this.store.save(next);
     // The saved steps always end in "a" (bisect the first half of the pool
     // narrowed so far); dropping that final step yields the pool itself.
-    const suspects = bizect(pool, next.steps.slice(0, -1)).length - 1;
+    const remaining = suspectRange(targetIndex, next.steps.slice(0, -1));
     return progress([
       target.status === "failed"
         ? "The group selected still fails. Let's do a new partition."
         : "We reached the target and nothing failed. Let's bisect the other half.",
-      `Suspects remaining: ${suspects}`,
+      `Suspects remaining: ${remaining.end - remaining.start}`,
       `Current target is: ${next.target}`,
     ]);
   }
+}
+
+/** The last result is the target. Check the preceding runs against the snapshot. */
+function ranSuspectsInOrder(results: TestResult[], items: SuiteItem[], start: number): boolean {
+  const seen = new Set<string>();
+  for (let i = 0; i < results.length - 1; i++) {
+    const { id, status } = results[i]!;
+    if (status === "skipped" || id !== items[start + i]!.id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+  }
+  return true;
 }
 
 /** The selected group passed: the leak hides in the other half, descend into it. */

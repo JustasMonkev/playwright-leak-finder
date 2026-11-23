@@ -1,7 +1,7 @@
 import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   bizect,
   emptyState,
@@ -46,17 +46,13 @@ function fakeRunner(
   leakerId: string,
   targetId: string,
 ): TestRunner {
+  const locationKey = ({ file, line }: Pick<TestItem, "file" | "line">) => `${file}:${line}`;
   return {
     list: async () => items,
     run: async (options: RunOptions = {}) => {
-      const locations = options.locations;
+      const locations = options.locations && new Set(options.locations.map(locationKey));
       const selected = locations
-        ? items.filter((item) =>
-            locations.some(
-              (location) =>
-                location.file === item.file && location.line === item.line,
-            ),
-          )
+        ? items.filter((item) => locations.has(locationKey(item)))
         : items;
       const leaked = selected.some((item) => item.id === leakerId);
       return {
@@ -105,10 +101,9 @@ describe("performance", () => {
     ];
     for (const leakerIndex of [0, 5_000, 9_999]) {
       const leaker = items[leakerIndex]!;
-      const finder = new LeakFinder(
-        fakeRunner(items, leaker.id, target.id),
-        memoryStore(),
-      );
+      const runner = fakeRunner(items, leaker.id, target.id);
+      const executions = vi.spyOn(runner, "run");
+      const finder = new LeakFinder(runner, memoryStore());
       let report = await finder.run();
       let steps = 1;
       while (!report.done) {
@@ -120,7 +115,10 @@ describe("performance", () => {
       expect(report.leakCandidate).toBe(leaker.id);
       // ceil(log2(n)) halvings, +2 slack for the capture run and the odd
       // remainders of floor(m/2)+1 halves. Baseline: 13-15 steps.
-      expect(steps).toBeLessThanOrEqual(Math.ceil(Math.log2(items.length)) + 2);
+      const maxSteps = Math.ceil(Math.log2(items.length)) + 2;
+      expect(steps).toBeLessThanOrEqual(maxSteps);
+      // Capturing the target adds one verification run with the target alone.
+      expect(executions.mock.calls.length).toBeLessThanOrEqual(maxSteps + 1);
     }
   });
 
@@ -151,8 +149,6 @@ describe("performance", () => {
       // Baseline: save+load ~40ms; bound is ~125x. Quadratic JSON assembly takes minutes.
       expect(elapsed).toBeLessThan(5000);
       const { size } = await stat(path.join(directory, "state.json"));
-      // Baseline: 6.8MB (pretty-printed). 3x catches state that grows per step,
-      // e.g. a history array appended on every save.
       expect(size).toBeLessThan(20 * 1024 * 1024);
     }, 15_000);
   });

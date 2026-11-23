@@ -42,13 +42,14 @@ describe("forwarded argument validation", () => {
 
   it.each([
     ["--config", "demo"],
+    ["--add-reporter", "dot"],
     ["--grep", "test3"],
     ["--project", "chromium"],
     ["--headed"],
-  ])("accepts %s, which can only narrow the run", (...args) => {
+  ])("accepts %s without mistaking option values for positional filters", (...args) => {
     // Resolution of @playwright/test is what fails next, not the arg check.
-    return expect(runner.run({ passthroughArgs: args })).rejects.not.toThrow(
-      /leak finder controls|widening every step/,
+    return expect(runner.run({ passthroughArgs: args })).rejects.toThrow(
+      "Could not resolve @playwright/test",
     );
   });
 });

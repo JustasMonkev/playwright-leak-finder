@@ -7,10 +7,7 @@ describe("PlaywrightRunner consumer cwd", () => {
     // The constructor advertises `cwd` as a consumer project directory. A
     // relative directory is normal Node process input and should resolve from
     // the caller's current working directory.
-    const relativeFixture = path.relative(
-      process.cwd(),
-      path.join(process.cwd(), "tests", "fixtures", "packed-consumer"),
-    );
+    const relativeFixture = path.join("tests", "fixtures", "packed-consumer");
 
     await expect(
       new PlaywrightRunner({ cwd: relativeFixture }).list([
