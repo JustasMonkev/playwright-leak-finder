@@ -52,28 +52,13 @@ export class LeakFinder {
       return done(["No test failed: there is no target to bisect."]);
     }
 
-    const { results: isolated } = await this.runner.run({
-      locations: [failure],
-      passthroughArgs: args,
-      quiet: true,
-    });
-    const alone = isolated.length === 1 ? isolated[0] : undefined;
-    if (alone?.id !== failure.id || alone.status === "skipped") {
-      return done([
-        `Could not verify ${failure.id} on its own, so the search is inconclusive.`,
-        "Check that its file:line selects only the target and that the target does not skip in isolation.",
-      ]);
-    }
-    if (alone.status === "failed") {
-      return done([
-        `${failure.id} fails on its own, so no earlier test is leaking into it.`,
-        "Fix that test first, then run the leak finder again.",
-      ]);
-    }
+    const isolationProblem = await this.verifyIsolation(failure, args);
+    if (isolationProblem) return isolationProblem;
 
     const state: LeakFinderState = {
       steps: "a",
       target: failure.id,
+      isolationVerified: true,
       items: results.map(snapshotItem),
     };
     await this.store.save(state);
@@ -81,6 +66,30 @@ export class LeakFinder {
       `Target set to: ${state.target}`,
       `Suspects remaining: ${failureIndex}`,
       "Run the same command again to bisect the tests before the target.",
+    ]);
+  }
+
+  /** Only a single matching target that meets Playwright's expectation is a reliable baseline. */
+  private async verifyIsolation(target: SuiteItem, args: string[]): Promise<LeakFinderReport | null> {
+    const { results: isolated } = await this.runner.run({
+      locations: [target],
+      passthroughArgs: args,
+      quiet: true,
+    });
+    const alone = isolated.length === 1 ? isolated[0] : undefined;
+    const verdict = alone?.id === target.id && alone.file === target.file && alone.line === target.line
+      ? alone.status
+      : undefined;
+    if (verdict === "passed") return null;
+    if (verdict === "failed") {
+      return done([
+        `${target.id} has an unexpected outcome on its own; no earlier test is needed to reproduce it.`,
+        "Fix that test first, then run the leak finder again.",
+      ]);
+    }
+    return done([
+      `Could not verify ${target.id} on its own, so the search is inconclusive.`,
+      "Check that its file:line selects only the target and that the target does not skip in isolation.",
     ]);
   }
 
@@ -112,6 +121,13 @@ export class LeakFinder {
         "The leak probably needs more than one test, so bisection cannot pin it down.",
         "Run --reset to start over.",
       ]);
+    }
+
+    if (state.isolationVerified !== true) {
+      const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
+      if (isolationProblem) return isolationProblem;
+      state = { ...state, items, isolationVerified: true };
+      await this.store.save(state);
     }
 
     const { results } = await this.runner.run({

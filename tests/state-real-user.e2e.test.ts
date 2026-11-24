@@ -12,6 +12,7 @@ const stateFile = (cwd: string): string => path.join(stateDirectory(cwd), "state
 const targetId = "scenario.spec.ts › target";
 const writerId = "scenario.spec.ts › writer";
 const singleLeakSnapshot = {
+  isolationVerified: true,
   steps: "a",
   target: targetId,
   items: [
@@ -35,6 +36,23 @@ describe("persisted state through real user workflows", () => {
   async function savedState(cwd: string): Promise<unknown> {
     return JSON.parse(await readFile(stateFile(cwd), "utf8"));
   }
+
+  it("rechecks an unverified target before resuming an older search", { timeout: 120_000 }, async () => {
+    const cwd = await project("single-leak.spec.ts");
+    const spec = path.join(cwd, "scenario.spec.ts");
+    const original = await readFile(spec, "utf8");
+    await writeFile(spec, original.replace("expect(shared)", "test.skip(shared.length === 0); expect(shared)"));
+    const oldState = JSON.stringify({ steps: "a", target: targetId, items: singleLeakSnapshot.items });
+    await mkdir(stateDirectory(cwd));
+    await writeFile(stateFile(cwd), oldState);
+
+    const replay = await runCli(cwd, "--auto");
+
+    expect(replay.code).toBe(2);
+    expect(replay.stdout).toContain("inconclusive");
+    expect(replay.stdout).not.toContain("Leak found in:");
+    expect(await readFile(stateFile(cwd), "utf8")).toBe(oldState);
+  });
 
   it("keeps status and reset truthful before, during, and after a search", { timeout: 120_000 }, async () => {
     const cwd = await project("single-leak.spec.ts");

@@ -122,7 +122,7 @@ describe("CLI end-to-end", () => {
 
     expect(result.code).toBe(2);
     expect(result.stdout).toContain(
-      "broken.spec.ts › broken fails on its own, so no earlier test is leaking into it.",
+      "broken.spec.ts › broken has an unexpected outcome on its own; no earlier test is needed to reproduce it.",
     );
     expect(existsSync(stateDir(dir))).toBe(false);
   });

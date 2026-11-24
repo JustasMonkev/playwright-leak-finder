@@ -12,6 +12,8 @@ export interface SuiteItem {
 export interface LeakFinderState {
   /** Sequence of "a"/"b" partition choices taken so far. */
   steps: string;
+  /** Absent in saved searches that predate mandatory verification of the isolated target. */
+  isolationVerified?: true;
   /** Id of the failing test whose leak we are hunting, if any. */
   target: string | null;
   /** Ordered snapshot of the collected suite, taken on the first run. */
@@ -105,7 +107,9 @@ function parseState(value: unknown): LeakFinderState | null {
   if (!hasConsistentSearchState(steps, target, items)) {
     return null;
   }
-  return { steps, target, items };
+  return value.isolationVerified === true
+    ? { steps, target, items, isolationVerified: true }
+    : { steps, target, items };
 }
 
 function hasConsistentSearchState(
