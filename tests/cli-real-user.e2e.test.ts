@@ -4,20 +4,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createProject, runCli } from "./e2e-helpers";
 
-const CONFIG =
-  'import { defineConfig } from "@playwright/test";\n' +
-  'export default defineConfig({ testDir: "../specs" });\n';
+const ROOT_CONFIG = 'export default { testDir: "." };';
+const NESTED_CONFIG = 'export default { testDir: "../specs" };';
 
-const LEAKY_SPEC =
-  'import { expect, test } from "@playwright/test";\n' +
-  "const state: string[] = [];\n" +
-  'test("setup", () => {});\n' +
-  'test("leaker", () => { state.push("leak"); });\n' +
-  'test("victim", () => { expect(state).toEqual([]); });\n';
+const LEAKY_SPEC = `import { expect, test } from "@playwright/test";
+const state: string[] = [];
+test("setup", () => {});
+test("leaker", () => { state.push("leak"); });
+test("victim", () => { expect(state).toEqual([]); });`;
 
-const PASSING_SPEC =
-  'import { expect, test } from "@playwright/test";\n' +
-  'test("works", () => { expect(true).toBe(true); });\n';
+const PASSING_SPEC = `import { test } from "@playwright/test";
+test("works", () => {});`;
 
 describe("CLI real-user scenarios", () => {
   it.each([
@@ -31,9 +28,7 @@ describe("CLI real-user scenarios", () => {
     "--quiet",
   ])("rejects a bare test filter following boolean Playwright flag %s", { timeout: 30_000 }, async (flag) => {
     const root = await createProject({
-      "playwright.config.ts":
-        'import { defineConfig } from "@playwright/test";\n' +
-        'export default defineConfig({ testDir: "." });\n',
+      "playwright.config.ts": ROOT_CONFIG,
       "leaky.spec.ts": LEAKY_SPEC,
     });
 
@@ -49,7 +44,7 @@ describe("CLI real-user scenarios", () => {
 
   it("works from a nested directory with a separately passed config path containing spaces", { timeout: 120_000 }, async () => {
     const root = await createProject({
-      "configs/playwright config.ts": CONFIG,
+      "configs/playwright config.ts": NESTED_CONFIG,
       "specs/ok.spec.ts": PASSING_SPEC,
     });
     const nestedCwd = path.join(root, "work", "deeply", "nested");
@@ -69,7 +64,7 @@ describe("CLI real-user scenarios", () => {
 
   it("accepts an equals-form config path with spaces and completes automatic bisection", { timeout: 180_000 }, async () => {
     const root = await createProject({
-      "config directory/playwright config.ts": CONFIG,
+      "config directory/playwright config.ts": NESTED_CONFIG,
       "specs/leaky.spec.ts": LEAKY_SPEC,
     });
 
@@ -87,9 +82,7 @@ describe("CLI real-user scenarios", () => {
 
   it("reports an unknown Playwright option on stderr and does not create state", { timeout: 30_000 }, async () => {
     const root = await createProject({
-      "playwright.config.ts":
-        'import { defineConfig } from "@playwright/test";\n' +
-        'export default defineConfig({ testDir: "." });\n',
+      "playwright.config.ts": ROOT_CONFIG,
       "ok.spec.ts": PASSING_SPEC,
     });
 
@@ -111,9 +104,7 @@ describe("CLI real-user scenarios", () => {
     ["--ui-port", "9323"],
   ])("rejects protected Playwright argument %s when its value is separate", { timeout: 30_000 }, async (...args: string[]) => {
     const root = await createProject({
-      "playwright.config.ts":
-        'import { defineConfig } from "@playwright/test";\n' +
-        'export default defineConfig({ testDir: "." });\n',
+      "playwright.config.ts": ROOT_CONFIG,
       "ok.spec.ts": PASSING_SPEC,
     });
 

@@ -9,7 +9,7 @@ export interface ProjectReport {
   scheduled: boolean;
 }
 
-const statuses: Record<ReturnType<TestCase["outcome"]>, TestStatus> = {
+const OUTCOME_STATUS: Record<ReturnType<TestCase["outcome"]>, TestStatus> = {
   expected: "passed",
   skipped: "skipped",
   unexpected: "failed",
@@ -24,9 +24,7 @@ export default class LeakFinderReporter implements Reporter {
 
   onBegin(config: FullConfig, suite: Suite): void {
     this.rootDir = config.rootDir;
-    // Differently configured projects may also have the same (or empty) name.
-    this.mayRepeat = config.projects.some((project) => project.repeatEach > 1)
-      || new Set(config.projects.map((project) => project.name)).size < config.projects.length;
+    this.mayRepeat = mayEmitRepeatedDeclarations(config);
     this.collected = suite.allTests();
   }
 
@@ -39,52 +37,85 @@ export default class LeakFinderReporter implements Reporter {
   }
 
   async onEnd(): Promise<void> {
-    // Start events give the true run order, even across worker groups.
-    // Unstarted cases (all cases during --list) retain collection order.
+    // A Set retains first-start order. Tests that never started (all tests
+    // during --list) follow in collection order.
     for (const test of this.collected) this.started.add(test);
-    const projects = new Map<string, ProjectReport>();
-    const repeated = new Map<string, TestResult>();
-    for (const test of this.started) {
-      const name = test.parent.project()?.name ?? "";
-      let report = projects.get(name);
-      if (!report) {
-        report = { name, scheduled: false, results: [] };
-        projects.set(name, report);
-      }
+    const reports = this.buildProjectReports(this.started);
+    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify(reports));
+  }
+
+  private buildProjectReports(tests: Set<TestCase>): ProjectReport[] {
+    const reportsByProject = new Map<string, ProjectReport>();
+    const repeats = this.mayRepeat ? new Map<string, TestResult>() : undefined;
+    for (const test of tests) {
+      const report = getOrCreateProjectReport(reportsByProject, test.parent.project()?.name ?? "");
+      // A skipped test can still distinguish a scheduled project from a blocked one.
       report.scheduled ||= test.results.length > 0;
-      const result = this.result(test);
-      if (this.mayRepeat) {
-        // The display ID flattens title components with " › ", which is also
-        // legal in titles. Use the structured path to identify a declaration.
-        const { file, line, column } = test.location;
-        const key = JSON.stringify([test.titlePath(), file, line, column]);
-        const previous = repeated.get(key);
+      const result = this.toTestResult(test);
+      if (repeats) {
+        const key = declarationKey(test);
+        const previous = repeats.get(key);
         if (previous) {
-          if (result.status === "failed" || previous.status === "skipped") {
-            previous.status = result.status;
-          }
+          previous.status = mergeRepeatedStatus(previous.status, result.status);
           continue;
         }
-        repeated.set(key, result);
+        repeats.set(key, result);
       }
       report.results.push(result);
     }
-    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify([...projects.values()]));
+
+    return [...reportsByProject.values()];
   }
 
-  private result(test: TestCase): TestResult {
+  private toTestResult(test: TestCase): TestResult {
     const file = path.relative(this.rootDir, test.location.file).split(path.sep).join("/");
-    // titlePath() omits anonymous describes. Keep their empty component so
-    // IDs still match snapshots written by the former JSON adapter.
-    const titles = [test.title];
-    for (let suite = test.parent; suite.parent?.location; suite = suite.parent) {
-      titles.push(suite.title);
-    }
     return {
-      id: [file, ...titles.reverse()].join(" › "),
+      id: formatTestId(file, test),
       file,
       line: test.location.line,
-      status: statuses[test.outcome()],
+      status: OUTCOME_STATUS[test.outcome()],
     };
   }
+}
+
+function mayEmitRepeatedDeclarations(config: FullConfig): boolean {
+  if (config.projects.some((project) => project.repeatEach > 1)) return true;
+  // Differently configured projects can share a name and thus a report.
+  const names = new Set(config.projects.map((project) => project.name));
+  return names.size < config.projects.length;
+}
+
+function getOrCreateProjectReport(
+  reports: Map<string, ProjectReport>,
+  name: string,
+): ProjectReport {
+  let report = reports.get(name);
+  if (!report) {
+    report = { name, scheduled: false, results: [] };
+    reports.set(name, report);
+  }
+  return report;
+}
+
+function declarationKey(test: TestCase): string {
+  // The display ID flattens title components with " › ", which is also legal
+  // in titles. Key on the structured title path and source location instead.
+  const { file, line, column } = test.location;
+  return JSON.stringify([test.titlePath(), file, line, column]);
+}
+
+function mergeRepeatedStatus(previous: TestStatus, next: TestStatus): TestStatus {
+  if (previous === "failed" || next === "failed") return "failed";
+  if (previous === "passed" || next === "passed") return "passed";
+  return "skipped";
+}
+
+function formatTestId(file: string, test: TestCase): string {
+  // titlePath() omits anonymous describes. Walk ancestor describe suites so
+  // empty titles keep their slot and match snapshots from the former JSON adapter.
+  const titles = [test.title];
+  for (let suite = test.parent; suite.parent?.location; suite = suite.parent) {
+    titles.push(suite.title);
+  }
+  return [file, ...titles.reverse()].join(" › ");
 }

@@ -1,3 +1,9 @@
+export interface SuspectRange {
+  readonly start: number;
+  /** Exclusive; the target is never in the suspect range. */
+  readonly end: number;
+}
+
 export function isValidSteps(steps: string): boolean {
   return /^[ab]*$/u.test(steps);
 }
@@ -21,12 +27,10 @@ export function bizect<T>(items: readonly T[], steps = ""): T[] {
   return selectPartition(items, targetIndex, range);
 }
 
-interface SuspectRange {
-  start: number;
-  end: number;
-}
-
-/** Half-open suspect range; the target is not part of the range. */
+/**
+ * Compute the half-open `[start, end)` range of suspects selected by `steps`
+ * from an initial pool of `suspectCount` tests before the target.
+ */
 export function suspectRange(suspectCount: number, steps: string): SuspectRange {
   if (!isValidSteps(steps)) {
     throw new Error(`Invalid steps "${steps}": only "a" and "b" are allowed`);
@@ -34,7 +38,7 @@ export function suspectRange(suspectCount: number, steps: string): SuspectRange 
   let start = 0;
   let end = suspectCount;
   for (const step of steps) {
-    // Odd-sized pools give the extra suspect to the first half.
+    // Odd-sized pools give the extra suspect to the first half ("a").
     const middle = start + Math.ceil((end - start) / 2);
     if (step === "a") {
       end = middle;
@@ -51,12 +55,13 @@ export function selectPartition<T>(
   { start, end }: SuspectRange,
 ): T[] {
   if (targetIndex < 0) return [];
-  const selection = new Array<T>(end - start + 1);
+  const suspectCount = end - start;
+  const selection = new Array<T>(suspectCount + 1);
   // Copy by index, not slice: a hole in the input is an explicit undefined
   // in the returned array, just as it is when spreading the input.
-  for (let i = start; i < end; i++) {
-    selection[i - start] = items[i]!;
+  for (let i = 0; i < suspectCount; i++) {
+    selection[i] = items[start + i]!;
   }
-  selection[end - start] = items[targetIndex]!;
+  selection[suspectCount] = items[targetIndex]!;
   return selection;
 }

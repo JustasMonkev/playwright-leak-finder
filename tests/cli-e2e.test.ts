@@ -8,36 +8,20 @@ const stateDir = (dir: string): string => path.join(dir, ".playwright-leak-finde
 const stateFile = (dir: string): string => path.join(stateDir(dir), "state.json");
 const BANNER = `${"=".repeat(25)} Leak finder ${"=".repeat(25)}`;
 
-const CONFIG =
-  'import { defineConfig } from "@playwright/test";\n' +
-  'export default defineConfig({ testDir: "." });\n';
+const CONFIG = 'export default { testDir: "." };';
 
-const MULTI_PROJECT_CONFIG =
-  'import { defineConfig } from "@playwright/test";\n' +
-  "export default defineConfig({\n" +
-  '  testDir: ".",\n' +
-  '  projects: [{ name: "alpha" }, { name: "beta" }],\n' +
-  "});\n";
+const MULTI_PROJECT_CONFIG = `export default {
+  testDir: ".",
+  projects: [{ name: "alpha" }, { name: "beta" }],
+};`;
 
-const ALL_PASS_SPEC =
-  'import { expect, test } from "@playwright/test";\n' +
-  "\n" +
-  'test("one", () => {\n' +
-  "  expect(true).toBe(true);\n" +
-  "});\n" +
-  "\n" +
-  'test("two", () => {\n' +
-  "  expect(true).toBe(true);\n" +
-  "});\n";
+const ALL_PASS_SPEC = `import { test } from "@playwright/test";
+test("one", () => {});
+test("two", () => {});`;
 
-const BROKEN_ALONE_SPEC =
-  'import { expect, test } from "@playwright/test";\n' +
-  "\n" +
-  'test("fine", () => {});\n' +
-  "\n" +
-  'test("broken", () => {\n' +
-  "  expect(1).toBe(2);\n" +
-  "});\n";
+const BROKEN_ALONE_SPEC = `import { expect, test } from "@playwright/test";
+test("fine", () => {});
+test("broken", () => { expect(1).toBe(2); });`;
 
 // End-to-end coverage for the built CLI, spawned against throwaway
 // Playwright projects under tests/ so @playwright/test resolves from the
@@ -128,9 +112,7 @@ describe("CLI end-to-end", () => {
 
   it("exits 2 when nothing is collected", { timeout: 120_000 }, async () => {
     const dir = await createProject({
-      "playwright.config.ts":
-        'import { defineConfig } from "@playwright/test";\n' +
-        'export default defineConfig({ testDir: "./empty" });\n',
+      "playwright.config.ts": 'export default { testDir: "./empty" };',
     });
     await mkdir(path.join(dir, "empty"));
 
