@@ -55,13 +55,12 @@ export function selectPartition<T>(
   { start, end }: SuspectRange,
 ): T[] {
   if (targetIndex < 0) return [];
-  const suspectCount = end - start;
-  const selection = new Array<T>(suspectCount + 1);
+  const selection = new Array<T>(end - start + 1);
   // Copy by index, not slice: a hole in the input is an explicit undefined
   // in the returned array, just as it is when spreading the input.
-  for (let i = 0; i < suspectCount; i++) {
-    selection[i] = items[start + i]!;
+  for (let i = start; i < end; i++) {
+    selection[i - start] = items[i]!;
   }
-  selection[suspectCount] = items[targetIndex]!;
+  selection[end - start] = items[targetIndex]!;
   return selection;
 }
