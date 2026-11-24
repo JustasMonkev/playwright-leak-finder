@@ -63,8 +63,8 @@ Any other argument is forwarded to \`playwright test\` (--config, --project,
   * --reporter, --workers/-j, --max-failures/-x, --list, --retries, --shard,
     --repeat-each, --last-failed/--last-failed-file, --ui/--ui-host/--ui-port
     and --debug. The search sets these itself: tests run
-    with --workers=1 so execution order is deterministic, and the JSON
-    reporter is how results are read back.
+    with --workers=1 so execution order is deterministic, and the leak
+    finder sets its reporter to read the results.
   * Bare test filters (a path or a \`file:line\`). Playwright combines those
     with the filters the search uses, so one would widen every step instead
     of narrowing it. Use --grep or --project instead.`;

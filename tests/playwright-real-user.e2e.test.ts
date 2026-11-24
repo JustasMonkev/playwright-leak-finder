@@ -1,34 +1,9 @@
 import { cp, mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import { spawn } from "node:child_process";
-import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { command, repoRoot } from "./e2e-helpers";
 
-const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../..");
 const fixture = path.join(repoRoot, "tests", "fixtures", "packed-consumer");
-
-interface CommandResult {
-  code: number | null;
-  stdout: string;
-  stderr: string;
-}
-
-function command(
-  executable: string,
-  args: string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(executable, args, { cwd, env });
-    let stdout = "";
-    let stderr = "";
-    child.stdout.on("data", (chunk) => (stdout += chunk));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
-    child.on("error", reject);
-    child.on("close", (code) => resolve({ code, stdout, stderr }));
-  });
-}
 
 describe("packed package in a real Playwright consumer", () => {
   let workDir: string;

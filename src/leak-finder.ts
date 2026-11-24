@@ -1,6 +1,6 @@
-import { bizect } from "./bizect";
-import type { TestRunner } from "./playwright";
-import type { LeakFinderState, StateStore } from "./state";
+import { selectPartition, suspectRange, type SuspectRange } from "./bizect";
+import type { TestResult, TestRunner } from "./playwright";
+import type { LeakFinderState, StateStore, SuiteItem } from "./state";
 
 export interface LeakFinderReport {
   /** True when running again would not advance the search. */
@@ -27,55 +27,64 @@ export class LeakFinder {
 
   async run(passthroughArgs: string[] = []): Promise<LeakFinderReport> {
     const state = await this.store.load();
-    return state.target === null
-      ? this.captureTarget(passthroughArgs)
-      : this.bisect(state, passthroughArgs);
+    if (state.target === null) {
+      return this.captureTarget(passthroughArgs);
+    }
+    return this.bisect(state, passthroughArgs);
   }
 
   /** First run: execute the suite until something fails and remember it. */
   private async captureTarget(args: string[]): Promise<LeakFinderReport> {
-    const outcome = await this.runner.run({
+    const { results } = await this.runner.run({
       stopOnFirstFailure: true,
       passthroughArgs: args,
     });
-    if (outcome.results.length === 0) {
+    if (results.length === 0) {
       return done([
         "No tests were collected, so there is nothing to bisect.",
         "Check the config, project and filters you forwarded to `playwright test`.",
       ]);
     }
-    const failure = outcome.results.find((result) => result.status === "failed");
+
+    const failureIndex = results.findIndex((result) => result.status === "failed");
+    const failure = results[failureIndex];
     if (!failure) {
       return done(["No test failed: there is no target to bisect."]);
     }
-    // A test that fails alone has no leak to hunt; without this the search
-    // would happily converge and blame whichever test it narrowed down to.
-    const alone = await this.runner.run({
-      locations: [failure],
-      passthroughArgs: args,
-      // Quiet: a second "test5 passed" right after "test5 failed" reads as a
-      // bug. The report line below explains the check instead.
-      quiet: true,
-    });
-    // Only trust this when the filter really did select just the target: with
-    // loop-generated tests several can share its file:line.
-    const ranAlone = alone.results.length === 1 && alone.results[0]!;
-    if (ranAlone && ranAlone.id === failure.id && ranAlone.status === "failed") {
+
+    if (await this.failsInIsolation(failure, args)) {
       return done([
         `${failure.id} fails on its own, so no earlier test is leaking into it.`,
         "Fix that test first, then run the leak finder again.",
       ]);
     }
-    const items = outcome.results.map(({ id, file, line }) => ({ id, file, line }));
-    const state: LeakFinderState = { steps: "a", target: failure.id, items };
+
+    const state: LeakFinderState = {
+      steps: "a",
+      target: failure.id,
+      items: results.map(snapshotItem),
+    };
     await this.store.save(state);
     return progress([
       `Target set to: ${state.target}`,
-      // Tests after the target can appear in the report as skipped; only the
-      // ones that ran before it are suspects.
-      `Suspects remaining: ${outcome.results.indexOf(failure)}`,
+      `Suspects remaining: ${failureIndex}`,
       "Run the same command again to bisect the tests before the target.",
     ]);
+  }
+
+  private async failsInIsolation(
+    target: TestResult,
+    args: string[],
+  ): Promise<boolean> {
+    const { results } = await this.runner.run({
+      locations: [target],
+      passthroughArgs: args,
+      quiet: true,
+    });
+    // Only trust this when the filter really did select just the target: with
+    // loop-generated tests several can share its file:line.
+    const alone = results.length === 1 ? results[0] : undefined;
+    return alone?.id === target.id && alone.status === "failed";
   }
 
   /** Subsequent runs: execute one bisection step and record the outcome. */
@@ -83,8 +92,11 @@ export class LeakFinder {
     state: LeakFinderState,
     args: string[],
   ): Promise<LeakFinderReport> {
-    // Use snapshot to avoid a second Playwright spawn per step.
-    const items = state.items.length > 0 ? state.items : await this.runner.list(args);
+    // Only legacy searches lack a snapshot and need another Playwright invocation.
+    const items =
+      state.items.length > 0
+        ? state.items
+        : (await this.runner.list(args)).map(snapshotItem);
     const targetIndex = items.findIndex((item) => item.id === state.target);
     if (targetIndex <= 0) {
       await this.runner.run({ passthroughArgs: args });
@@ -95,26 +107,22 @@ export class LeakFinder {
       return done([reason, `Current target is: ${state.target}`]);
     }
 
-    const pool = items.slice(0, targetIndex + 1);
-    const selection = bizect(pool, state.steps);
-    // Nothing left to suspect: the halves have been exhausted without the
-    // target failing, so no single earlier test reproduces it. Without this
-    // the search keeps appending steps and re-running the target forever.
-    if (selection.length < 2) {
+    const range = suspectRange(targetIndex, state.steps);
+    const suspectCount = range.end - range.start;
+    if (suspectCount === 0) {
       return done([
         "The search cannot narrow any further: no single earlier test makes the target fail.",
         "The leak probably needs more than one test, so bisection cannot pin it down.",
         "Run --reset to start over.",
       ]);
     }
-    // Down to one suspect plus the target: if the target still fails, that's our leak.
-    const leakCandidate = selection.length === 2 ? selection[0]!.id : null;
-    const outcome = await this.runner.run({
-      locations: selection,
+
+    const { results } = await this.runner.run({
+      locations: selectPartition(items, targetIndex, range),
       passthroughArgs: args,
     });
 
-    const target = outcome.results.find((result) => result.id === state.target);
+    const target = results.find((result) => result.id === state.target);
     if (!target || target.status === "skipped") {
       return done([
         "The target did not run, so this step is inconclusive.",
@@ -122,57 +130,78 @@ export class LeakFinder {
       ]);
     }
 
-    // `file:line` is not a unique test id: loop-generated tests share a line,
-    // and edits shift lines under the saved snapshot. Either runs tests we did
-    // not select, which would pin the leak on an innocent test. Refuse to
-    // answer rather than answer wrongly.
-    const selected = new Set(selection.map((item) => item.id));
-    if (
-      outcome.results.length !== selected.size ||
-      outcome.results.some((result) => !selected.has(result.id))
-    ) {
+    // A moved line or shared file:line may have selected a different test.
+    if (!matchesSelection(results, items, range, target.id)) {
       return done([
         "The tests that ran are not the ones selected, so this step is inconclusive.",
-        "Either a spec file changed lines since the search started, or several tests share a file:line.",
+        "Check for changed test order, moved spec lines, or several tests sharing a file:line.",
         "Run --reset to start over.",
       ]);
     }
 
-    if (target.status === "failed" && leakCandidate) {
-      return {
-        done: true,
-        leakCandidate,
-        lines: [
+    const targetFailed = target.status === "failed";
+    const leakCandidate = suspectCount === 1 ? items[range.start]!.id : null;
+    if (targetFailed && leakCandidate) {
+      return done(
+        [
           "We found a leak!",
           `Leak found in: ${leakCandidate}`,
           "This search is finished but its state is still saved: run --reset before starting another one.",
         ],
-      };
+        leakCandidate,
+      );
     }
 
-    const steps = target.status === "failed" ? `${state.steps}a` : stepsAfterTargetPassed(state.steps);
-    const next: LeakFinderState = { ...state, steps };
-    await this.store.save(next);
-    // The saved steps always end in "a" (bisect the first half of the pool
-    // narrowed so far); dropping that final step yields the pool itself.
-    const suspects = bizect(pool, next.steps.slice(0, -1)).length - 1;
+    // Narrow to the half that still hides the leak, then test its first half ("a") next.
+    const narrowedSteps = targetFailed ? state.steps : otherHalfSteps(state.steps);
+    const nextState: LeakFinderState = { ...state, steps: `${narrowedSteps}a`, items };
+    await this.store.save(nextState);
+    const remaining = suspectRange(targetIndex, narrowedSteps);
     return progress([
-      target.status === "failed"
+      targetFailed
         ? "The group selected still fails. Let's do a new partition."
         : "We reached the target and nothing failed. Let's bisect the other half.",
-      `Suspects remaining: ${suspects}`,
-      `Current target is: ${next.target}`,
+      `Suspects remaining: ${remaining.end - remaining.start}`,
+      `Current target is: ${nextState.target}`,
     ]);
   }
 }
 
-/** The selected group passed: the leak hides in the other half, descend into it. */
-function stepsAfterTargetPassed(steps: string): string {
-  return steps.endsWith("a") ? `${steps.slice(0, -1)}ba` : "aa";
+function matchesSelection(
+  results: readonly TestResult[],
+  items: readonly SuiteItem[],
+  range: SuspectRange,
+  targetId: string,
+): boolean {
+  const suspectCount = range.end - range.start;
+  if (results.length !== suspectCount + 1 || results[suspectCount]?.id !== targetId) {
+    return false;
+  }
+  const seen = new Set<string>();
+  for (let i = 0; i < suspectCount; i++) {
+    const { id } = results[i]!;
+    if (id !== items[range.start + i]!.id || seen.has(id)) {
+      return false;
+    }
+    seen.add(id);
+  }
+  return true;
 }
 
-function done(lines: string[]): LeakFinderReport {
-  return { done: true, lines, leakCandidate: null };
+/**
+ * The selected first half passed, so switch to its sibling half (`...a` -> `...b`).
+ * Falls back to `"a"` for legacy or hand-edited states not ending in `"a"`.
+ */
+function otherHalfSteps(steps: string): string {
+  return steps.endsWith("a") ? `${steps.slice(0, -1)}b` : "a";
+}
+
+function snapshotItem({ id, file, line }: SuiteItem): SuiteItem {
+  return { id, file, line };
+}
+
+function done(lines: string[], leakCandidate: string | null = null): LeakFinderReport {
+  return { done: true, lines, leakCandidate };
 }
 
 function progress(lines: string[]): LeakFinderReport {

@@ -41,27 +41,22 @@ export class FileStateStore implements StateStore {
   async load(): Promise<LeakFinderState> {
     try {
       const raw: unknown = JSON.parse(await readFile(this.file, "utf8"));
-      if (isState(raw)) {
-        return { steps: raw.steps, target: raw.target, items: raw.items };
-      }
+      return parseState(raw) ?? emptyState();
     } catch {
       // A missing or corrupt file simply starts a fresh search.
+      return emptyState();
     }
-    return emptyState();
   }
 
   async save(state: LeakFinderState): Promise<void> {
     await mkdir(path.dirname(this.file), { recursive: true });
-    // Write then rename, so an interrupted run cannot leave truncated JSON
-    // that load() would silently discard along with the whole search. Each
-    // writer gets its own temporary file so concurrent CLI runs cannot rename
-    // the same path out from under each other.
-    const temporary = `${this.file}.${process.pid}.${randomUUID()}.tmp`;
+    const temporary = `${this.file}.${randomUUID()}.tmp`;
     try {
-      await writeFile(temporary, `${JSON.stringify(state, null, 2)}\n`);
+      await writeFile(temporary, `${JSON.stringify(state)}\n`);
       await rename(temporary, this.file);
-    } finally {
+    } catch (error) {
       await rm(temporary, { force: true });
+      throw error;
     }
   }
 
@@ -70,31 +65,32 @@ export class FileStateStore implements StateStore {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isPositiveLineNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 function isSuiteItem(value: unknown): value is SuiteItem {
-  if (
-    typeof value !== "object" || value === null ||
-    !("id" in value) || !("file" in value) || !("line" in value)
-  ) {
+  if (!isRecord(value)) {
     return false;
   }
-  const { id, file, line } = value;
   return (
-    typeof id === "string" &&
-    id.length > 0 &&
-    typeof file === "string" &&
-    file.length > 0 &&
-    typeof line === "number" &&
-    Number.isSafeInteger(line) &&
-    line > 0
+    isNonEmptyString(value.id) &&
+    isNonEmptyString(value.file) &&
+    isPositiveLineNumber(value.line)
   );
 }
 
-function isState(value: unknown): value is LeakFinderState {
-  if (
-    typeof value !== "object" || value === null ||
-    !("steps" in value) || !("target" in value) || !("items" in value)
-  ) {
-    return false;
+function parseState(value: unknown): LeakFinderState | null {
+  if (!isRecord(value)) {
+    return null;
   }
   const { steps, target, items } = value;
   if (
@@ -104,16 +100,27 @@ function isState(value: unknown): value is LeakFinderState {
     !Array.isArray(items) ||
     !items.every(isSuiteItem)
   ) {
-    return false;
+    return null;
   }
+  if (!hasConsistentSearchState(steps, target, items)) {
+    return null;
+  }
+  return { steps, target, items };
+}
+
+function hasConsistentSearchState(
+  steps: string,
+  target: string | null,
+  items: readonly SuiteItem[],
+): boolean {
   if (target === null) {
+    // An idle state cannot carry leftover bisection steps or a suite snapshot.
     return steps.length === 0 && items.length === 0;
   }
-  return (
-    target.length > 0 &&
-    steps.length > 0 &&
-    // Empty snapshots are accepted for state files written by versions that
-    // predate persisted suite items; the runner will collect them once.
-    (items.length === 0 || items.some((item) => item.id === target))
-  );
+  if (target.length === 0 || steps.length === 0) {
+    return false;
+  }
+  // Empty snapshots are accepted for state files written by versions that
+  // predate persisted suite items; the runner will collect them once.
+  return items.length === 0 || items.some((item) => item.id === target);
 }

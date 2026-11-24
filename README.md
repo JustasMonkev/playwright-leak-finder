@@ -50,7 +50,7 @@ for two kinds it rejects rather than silently ignoring:
   `--max-failures`/`-x`, `--list`, `--retries`, `--shard`, `--repeat-each`,
   `--last-failed`/`--last-failed-file`, `--ui`/`--ui-host`/`--ui-port`,
   `--debug`. Tests always run with `--workers=1` so execution order is
-  deterministic, and the JSON reporter is how results are read back.
+  deterministic, and the leak finder sets its reporter to read the results.
 - **Bare test filters** (`reports.spec.ts`, `reports.spec.ts:12`). Playwright ORs
   those with the filters the search uses, so one would widen every step
   instead of narrowing it. Use `--grep` or `--project` instead.
@@ -139,9 +139,11 @@ guessing:
 - **A genuinely flaky target.** If the target fails for its own reasons rather
   than because of a leak, the first run catches it and stops. But a target
   that fails intermittently will send the search down the wrong half.
-- **Spec files edited mid-search.** The saved snapshot addresses tests by
-  `file:line`, so if lines shift the step is reported as inconclusive; run
-  `--reset` and start over.
+- **A replay that no longer matches the search.** Locations are selected by
+  `file:line`. If a file edit, a shared line, or a change in execution order
+  means the same tests no longer run in the original order, the step
+  is inconclusive. The saved search does not advance; run `--reset` to
+  capture a new one.
 
 ### CLI options
 

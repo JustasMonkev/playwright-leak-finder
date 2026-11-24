@@ -3,6 +3,7 @@
 // No dependencies and no database — tasks live in memory for the lifetime of
 // the process, which is exactly what lets one test leak state into another.
 import { createServer } from "node:http";
+import { text } from "node:stream/consumers";
 
 const PORT = Number(process.env.PORT ?? 3210);
 
@@ -88,16 +89,20 @@ const send = (res, status, body) => {
   res.end(JSON.stringify(body));
 };
 
-async function readJson(req, res) {
-  let raw = "";
-  for await (const chunk of req) {
-    raw += chunk;
-  }
+async function readTaskBody(req, res) {
+  const raw = await text(req);
+  let body;
   try {
-    return raw === "" ? {} : JSON.parse(raw);
+    body = JSON.parse(raw || "{}");
   } catch {
     send(res, 400, { error: "Invalid JSON" });
+    return;
   }
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    send(res, 400, { error: "Expected a JSON object" });
+    return;
+  }
+  return body;
 }
 
 const server = createServer(async (req, res) => {
@@ -115,7 +120,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "POST") {
-      const body = await readJson(req, res);
+      const body = await readTaskBody(req, res);
       if (body === undefined) return;
       const { title } = body;
       if (typeof title !== "string" || title.trim() === "") {
@@ -138,7 +143,7 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "PATCH") {
-      const body = await readJson(req, res);
+      const body = await readTaskBody(req, res);
       if (body === undefined) return;
       const { done } = body;
       const updated = { ...task, done: Boolean(done) };

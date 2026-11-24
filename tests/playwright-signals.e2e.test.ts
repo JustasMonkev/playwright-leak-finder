@@ -1,105 +1,78 @@
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { createInterface } from "node:readline";
+import { pathToFileURL } from "node:url";
+import { describe, expect, it, onTestFinished } from "vitest";
+import { createProject, repoRoot } from "./e2e-helpers";
 
-const repoRoot = path.resolve(fileURLToPath(import.meta.url), "../..");
-const cli = path.join(repoRoot, "dist", "cli.mjs");
-
-interface Exit {
-  code: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-}
-
-function waitForOutput(
-  child: ChildProcess,
-  output: () => string,
-  pattern: RegExp,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error(`Timed out waiting for subprocess output:\n${output()}`));
-    }, 15_000);
-    const check = (): void => {
-      if (pattern.test(output())) {
-        clearTimeout(timeout);
-        resolve();
-      }
-    };
-    child.stdout?.on("data", check);
-    child.once("close", () => {
-      clearTimeout(timeout);
-      reject(new Error(`Subprocess exited before expected output:\n${output()}`));
-    });
-    check();
+async function interrupt(args: string[], signal: NodeJS.Signals) {
+  const cwd = await createProject({
+    "package.json": '{ "type": "module" }\n',
+    "playwright.config.ts":
+      'import { defineConfig } from "@playwright/test";\n' +
+      'export default defineConfig({ testDir: ".", globalSetup: "./observe-signal.cjs" });\n',
+    // Global setup runs in the Playwright CLI process, not a test worker.
+    "observe-signal.cjs": [
+      "module.exports = () => {",
+      "  const signal = process.env.SIGNAL_UNDER_TEST;",
+      "  process.once(signal, (received) => {",
+      '    require("node:fs").writeSync(1, `Playwright received ${received}\\n`);',
+      "    if (process.listenerCount(signal) === 0) process.kill(process.pid, signal);",
+      "  });",
+      '  console.log("Playwright signal listener ready");',
+      "};",
+    ].join("\n"),
+    "hang.spec.ts":
+      'import { test } from "@playwright/test";\n' +
+      'test("waits for a signal", async () => await new Promise(() => {}));\n',
   });
+  const tempDir = path.join(cwd, "tmp");
+  await mkdir(tempDir);
+  const child = spawn(process.execPath, args, {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, TMPDIR: tempDir, SIGNAL_UNDER_TEST: signal },
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => (stdout += chunk));
+  child.stderr.setEncoding("utf8").on("data", (chunk) => (stderr += chunk));
+  const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", (code, receivedSignal) => resolve({ code, signal: receivedSignal }));
+  });
+  onTestFinished(async () => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await exited;
+    }
+  });
+
+  const lines = createInterface({ input: child.stdout, signal: AbortSignal.timeout(15_000) });
+  let signaled = false;
+  for await (const line of lines) {
+    if (line === "Playwright signal listener ready") {
+      signaled = child.kill(signal);
+      break;
+    }
+  }
+  expect(signaled, `Could not signal the running test:\n${stdout}${stderr}`).toBe(true);
+  const exit = await exited;
+  const tempFiles = await readdir(tempDir);
+  expect(tempFiles.filter((entry) => entry.startsWith("playwright-leak-finder-"))).toEqual([]);
+  expect(stdout.split(/\r?\n/u)).toContain(`Playwright received ${signal}`);
+  return { ...exit, stdout };
 }
 
 describe("CLI signal forwarding", () => {
-  const cleanups: Array<() => Promise<void>> = [];
-  const children: ChildProcess[] = [];
-
-  afterEach(async () => {
-    for (const child of children.splice(0)) {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-      }
-    }
-    await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
-  });
-
   it.each<NodeJS.Signals>(["SIGINT", "SIGTERM"])(
     "forwards %s and exits with the same signal without hanging",
     { timeout: 30_000 },
     async (signal) => {
-      const cwd = await mkdtemp(path.join(repoRoot, "tests", ".tmp-signal-"));
-      cleanups.push(() => rm(cwd, { recursive: true, force: true }));
-      const tempDir = path.join(cwd, "tmp");
-      await Promise.all([
-        mkdir(tempDir),
-        writeFile(path.join(cwd, "package.json"), '{ "type": "module" }\n'),
-        writeFile(
-          path.join(cwd, "playwright.config.ts"),
-          'import { defineConfig } from "@playwright/test";\n' +
-            'export default defineConfig({ testDir: "." });\n',
-        ),
-        writeFile(
-          path.join(cwd, "hang.spec.ts"),
-          'import { test } from "@playwright/test";\n' +
-            'test("waits for a signal", async () => await new Promise(() => {}));\n',
-        ),
-      ]);
-
-      const child = spawn(process.execPath, [cli, "--config=playwright.config.ts"], {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, TMPDIR: tempDir },
-      });
-      children.push(child);
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => (stdout += chunk));
-      child.stderr.on("data", (chunk) => (stderr += chunk));
-      const exited = new Promise<Exit>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, receivedSignal) =>
-          resolve({ code, signal: receivedSignal, stdout, stderr }),
-        );
-      });
-
-      await waitForOutput(child, () => `${stdout}${stderr}`, /Running 1 test/u);
-      expect(child.pid).toBeTypeOf("number");
-      process.kill(child.pid!, signal);
-
-      await expect(exited).resolves.toMatchObject({ code: null, signal });
-      expect(
-        (await readdir(tempDir)).filter((entry) =>
-          entry.startsWith("playwright-leak-finder-"),
-        ),
-      ).toEqual([]);
+      const cli = path.join(repoRoot, "dist", "cli.mjs");
+      const result = await interrupt([cli, "--config=playwright.config.ts"], signal);
+      expect(result).toMatchObject({ code: null, signal });
     },
   );
 
@@ -107,94 +80,27 @@ describe("CLI signal forwarding", () => {
     "rejects programmatic use on %s without dispatching the consumer handler twice",
     { timeout: 30_000 },
     async (signal) => {
-      const cwd = await mkdtemp(path.join(repoRoot, "tests", ".tmp-signal-api-"));
-      cleanups.push(() => rm(cwd, { recursive: true, force: true }));
-      const tempDir = path.join(cwd, "tmp");
-      await Promise.all([
-        mkdir(tempDir),
-        writeFile(path.join(cwd, "package.json"), '{ "type": "module" }\n'),
-        writeFile(
-          path.join(cwd, "playwright.config.ts"),
-          'import { defineConfig } from "@playwright/test";\n' +
-            'export default defineConfig({ testDir: "." });\n',
-        ),
-        writeFile(
-          path.join(cwd, "hang.spec.ts"),
-          'import { test } from "@playwright/test";\n' +
-            'test("waits for a signal", async () => await new Promise(() => {}));\n',
-        ),
-      ]);
-
       const packageUrl = pathToFileURL(path.join(repoRoot, "dist", "index.mjs")).href;
       const script = [
         `import { PlaywrightInterruptedError, PlaywrightRunner } from ${JSON.stringify(packageUrl)};`,
         "const signal = process.env.SIGNAL_UNDER_TEST;",
         "let handlerCalls = 0;",
         "process.on(signal, () => handlerCalls++);",
-        'const running = new PlaywrightRunner().run({ passthroughArgs: ["--config=playwright.config.ts"], quiet: false });',
         "try {",
-        "  const result = await running;",
-        "  console.log(JSON.stringify({ handlerCalls, resolved: true, results: result.results }));",
+        '  await new PlaywrightRunner().run({ passthroughArgs: ["--config=playwright.config.ts"], quiet: false });',
         "} catch (error) {",
         "  console.log(JSON.stringify({",
         "    handlerCalls,",
-        "    resolved: false,",
         "    interrupted: error instanceof PlaywrightInterruptedError,",
-        "    signal: error instanceof PlaywrightInterruptedError ? error.signal : null,",
+        "    signal: error.signal,",
         "  }));",
         "}",
       ].join("\n");
-      const child = spawn(process.execPath, ["--input-type=module", "--eval", script], {
-        cwd,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: {
-          ...process.env,
-          SIGNAL_UNDER_TEST: signal,
-          TMPDIR: tempDir,
-        },
-      });
-      children.push(child);
-      let stdout = "";
-      let stderr = "";
-      child.stdout.on("data", (chunk) => (stdout += chunk));
-      child.stderr.on("data", (chunk) => (stderr += chunk));
-      const exited = new Promise<Exit>((resolve, reject) => {
-        child.once("error", reject);
-        child.once("close", (code, receivedSignal) =>
-          resolve({ code, signal: receivedSignal, stdout, stderr }),
-        );
-      });
-
-      // This comes from the actual Playwright child, so the runner has
-      // completed mkdtemp(), spawned it, and installed signal forwarding.
-      await waitForOutput(child, () => `${stdout}${stderr}`, /Running 1 test/u);
-      process.kill(child.pid!, signal);
-      const result = await exited;
+      const result = await interrupt(["--input-type=module", "--eval", script], signal);
 
       expect(result).toMatchObject({ code: 0, signal: null });
-      const summary = result.stdout
-        .trim()
-        .split("\n")
-        .map((line) => {
-          try {
-            return JSON.parse(line) as unknown;
-          } catch {
-            // Playwright progress lines share stdout with the JSON summary and are not summary candidates.
-            return null;
-          }
-        })
-        .find((value) => value !== null);
-      expect(summary).toEqual({
-        handlerCalls: 1,
-        resolved: false,
-        interrupted: true,
-        signal,
-      });
-      expect(
-        (await readdir(tempDir)).filter((entry) =>
-          entry.startsWith("playwright-leak-finder-"),
-        ),
-      ).toEqual([]);
+      const lastLine = result.stdout.trim().split("\n").at(-1)!;
+      expect(JSON.parse(lastLine)).toEqual({ handlerCalls: 1, interrupted: true, signal });
     },
   );
 });
