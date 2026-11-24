@@ -52,7 +52,19 @@ export class LeakFinder {
       return done(["No test failed: there is no target to bisect."]);
     }
 
-    if (await this.failsInIsolation(failure, args)) {
+    const { results: isolated } = await this.runner.run({
+      locations: [failure],
+      passthroughArgs: args,
+      quiet: true,
+    });
+    const alone = isolated.length === 1 ? isolated[0] : undefined;
+    if (alone?.id !== failure.id || alone.status === "skipped") {
+      return done([
+        `Could not verify ${failure.id} on its own, so the search is inconclusive.`,
+        "Check that its file:line selects only the target and that the target does not skip in isolation.",
+      ]);
+    }
+    if (alone.status === "failed") {
       return done([
         `${failure.id} fails on its own, so no earlier test is leaking into it.`,
         "Fix that test first, then run the leak finder again.",
@@ -70,21 +82,6 @@ export class LeakFinder {
       `Suspects remaining: ${failureIndex}`,
       "Run the same command again to bisect the tests before the target.",
     ]);
-  }
-
-  private async failsInIsolation(
-    target: TestResult,
-    args: string[],
-  ): Promise<boolean> {
-    const { results } = await this.runner.run({
-      locations: [target],
-      passthroughArgs: args,
-      quiet: true,
-    });
-    // Only trust this when the filter really did select just the target: with
-    // loop-generated tests several can share its file:line.
-    const alone = results.length === 1 ? results[0] : undefined;
-    return alone?.id === target.id && alone.status === "failed";
   }
 
   /** Subsequent runs: execute one bisection step and record the outcome. */

@@ -252,6 +252,31 @@ describe("LeakFinder", () => {
     expect((await store.load()).target).toBeNull();
   });
 
+  it.each([
+    { name: "no test", titles: [] },
+    { name: "a different test", titles: ["other"] },
+    { name: "multiple tests", titles: ["other", "target"] },
+  ])("does not start a search when the isolation run selects $name", async ({ titles }) => {
+    const [writer, target] = suite(["writer", "target"]);
+    const isolated = titles.map((title) => ({
+      ...target!,
+      id: `demo.spec.ts › ${title}`,
+      status: "passed" as const,
+    }));
+    const runner: TestRunner = {
+      list: async () => [],
+      run: async (options) => options?.locations
+        ? { exitCode: 0, results: isolated }
+        : { exitCode: 1, results: [{ ...writer!, status: "passed" }, { ...target!, status: "failed" }] },
+    };
+    const store = new MemoryStateStore();
+    const report = await new LeakFinder(runner, store).run();
+
+    expect(report).toMatchObject({ done: true, leakCandidate: null });
+    expect(report.lines[0]).toContain("inconclusive");
+    expect(await store.load()).toEqual(emptyState());
+  });
+
   it("stops instead of looping when no single test reproduces the failure", async () => {
     // The victim only fails when BOTH earlier tests ran, so every half passes
     // and bisection can never pin it on one test.

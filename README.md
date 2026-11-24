@@ -139,6 +139,9 @@ guessing:
 - **A genuinely flaky target.** If the target fails for its own reasons rather
   than because of a leak, the first run catches it and stops. But a target
   that fails intermittently will send the search down the wrong half.
+- **An unverified target.** The target must pass when run alone. If the
+  location selects other tests, misses the target, or the target skips when
+  run alone, the search stops without saving a target.
 - **A replay that no longer matches the search.** Locations are selected by
   `file:line`. If a file edit, a shared line, or a change in execution order
   means the same tests no longer run in the original order, the step
