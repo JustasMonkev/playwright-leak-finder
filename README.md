@@ -166,7 +166,7 @@ The exit code distinguishes the outcomes, so the CLI is scriptable:
 | Code | Meaning |
 | --- | --- |
 | 0 | A leak was found, or a step completed and the search can continue |
-| 1 | Error: bad arguments, or Playwright could not run |
+| 1 | Error: bad arguments, or Playwright could not run the search (for example, collection failed or global setup threw) |
 | 2 | The search finished without finding a leak |
 
 ## Programmatic API
