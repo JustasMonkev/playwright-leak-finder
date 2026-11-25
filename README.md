@@ -55,9 +55,10 @@ for two kinds it rejects rather than silently ignoring:
   those with the filters the search uses, so one would widen every step
   instead of narrowing it. Use `--grep` or `--project` instead.
 
-The first run checks that the failing test still fails when run alone — if it
-does, there is no leak to hunt and the search stops there. Otherwise it sets
-the target and stops:
+The first run repeats the target on its own. The search starts only if exactly
+that test runs and meets its Playwright expectation. An unexpected outcome
+reproduces the problem in isolation. A skipped, missing, or ambiguous target
+makes the search inconclusive. After a verified run, the CLI sets the target:
 
 ```
 $ npx playwright-leak-finder
@@ -141,7 +142,8 @@ guessing:
   that fails intermittently will send the search down the wrong half.
 - **An unverified target.** The target must meet its Playwright expectation when run alone. If the
   location selects other tests, misses the target, or the target skips when
-  run alone, the search is inconclusive. Older saved searches verify this once
+  run alone, the search is inconclusive. With `repeatEach`, every isolated
+  repeat must meet the expectation. Older saved searches verify this once
   before resuming their existing partition.
 - **A replay that no longer matches the search.** Locations are selected by
   `file:line`. If a file edit, a shared line, or a change in execution order

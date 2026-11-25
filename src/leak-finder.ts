@@ -75,6 +75,7 @@ export class LeakFinder {
       locations: [target],
       passthroughArgs: args,
       quiet: true,
+      requireAllRepeats: true,
     });
     const alone = isolated.length === 1 ? isolated[0] : undefined;
     const verdict = alone?.id === target.id && alone.file === target.file && alone.line === target.line

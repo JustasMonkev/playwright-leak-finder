@@ -1,6 +1,6 @@
 {
   "name": "playwright-leak-finder",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Find the Playwright test that's leaking state before the one that fails, via binary search",
   "keywords": [
     "playwright",

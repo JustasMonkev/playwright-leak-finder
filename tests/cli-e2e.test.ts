@@ -76,6 +76,27 @@ describe("CLI end-to-end", () => {
     expect(existsSync(stateFile(dir))).toBe(false);
   });
 
+  it("stops when the target passes one isolated repeat and skips another", { timeout: 120_000 }, async () => {
+    const dir = await createProject({
+      "playwright.config.ts": 'export default { testDir: ".", repeatEach: 2 };',
+      "repeat.spec.ts": `import { expect, test } from "@playwright/test";
+        let ready = false;
+        test("prerequisite", () => { ready = true; });
+        test("target", ({}, info) => {
+          if (info.repeatEachIndex === 0) return;
+          test.skip(!ready);
+          expect(1).toBe(2);
+        });`,
+    });
+
+    const result = await runCli(dir, "--auto");
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("inconclusive");
+    expect(result.stdout).not.toContain("Leak found in:");
+    expect(existsSync(stateFile(dir))).toBe(false);
+  });
+
   it("advances one step per invocation and persists state between runs", { timeout: 180_000 }, async () => {
     const dir = await leakyFixture();
 
