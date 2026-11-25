@@ -13,6 +13,7 @@ import {
   type TestItem,
   type TestRunner,
 } from "playwright-leak-finder";
+import { buildRunArgs } from "../src/playwright-options";
 
 // Performance regression smoke checks. Bounds sit far above the measured
 // baselines on this machine (noted per test) so they never flake, while the
@@ -67,6 +68,16 @@ function fakeRunner(
 }
 
 describe("performance", () => {
+  it("does not send Playwright thousands of filters for files sharing source lines", () => {
+    const locations = Array.from({ length: 4_000 }, (_, i) => ({
+      file: `tests/spec-${Math.floor(i / 20)}.spec.ts`,
+      line: (i % 20) + 3,
+    }));
+    // Playwright checks these filters for every declaration; leave headroom
+    // for changes to the grouping size without allowing one filter per test.
+    expect(buildRunArgs({ locations }).length).toBeLessThan(locations.length / 4);
+  });
+
   it("bizects 100k items in a handful of steps quickly", () => {
     const items = Array.from({ length: 100_000 }, (_, i) => i);
     const expectedLengths: Record<string, number> = { a: 50_001, ab: 25_001, abababab: 391 };
