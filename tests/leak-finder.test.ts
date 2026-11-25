@@ -91,7 +91,7 @@ describe("LeakFinder", () => {
     const items = suite(["one", sameId ? "one" : "two", "three", "four", "target"]);
     const target = items[4]!.id;
     const store = new MemoryStateStore();
-    await store.save({ items, target, steps, isolationVerified: true });
+    await store.save({ items, target, steps, isolationVerified: true, playwrightArgs: [] });
     const runner: TestRunner = {
       list: async () => items,
       run: async () => ({
@@ -141,7 +141,7 @@ describe("LeakFinder", () => {
     const report = await new LeakFinder(runner, store).run();
 
     expect(report.lines).toContain("Suspects remaining: 3");
-    expect(await store.load()).toEqual({ items, target, steps: "aa", isolationVerified: true });
+    expect(await store.load()).toEqual({ items, target, steps: "aa", isolationVerified: true, playwrightArgs: [] });
   });
 
   it("sets the target on the first failing run", async () => {

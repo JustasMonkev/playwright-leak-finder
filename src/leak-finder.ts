@@ -30,6 +30,14 @@ export class LeakFinder {
     if (state.target === null) {
       return this.captureTarget(passthroughArgs);
     }
+    const savedArgs = state.playwrightArgs;
+    if (savedArgs && (savedArgs.length !== passthroughArgs.length ||
+      savedArgs.some((arg, index) => arg !== passthroughArgs[index]))) {
+      return done([
+        "The forwarded Playwright arguments differ from those used for the saved search.",
+        "Use the same arguments to resume it, or run --reset before starting a different search.",
+      ]);
+    }
     return this.bisect(state, passthroughArgs);
   }
 
@@ -59,6 +67,7 @@ export class LeakFinder {
       steps: "a",
       target: failure.id,
       isolationVerified: true,
+      playwrightArgs: [...args],
       items: results.map(snapshotItem),
     };
     await this.store.save(state);
@@ -123,10 +132,10 @@ export class LeakFinder {
       ]);
     }
 
-    if (state.isolationVerified !== true) {
+    if (state.isolationVerified !== true || state.playwrightArgs === undefined) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
       if (isolationProblem) return isolationProblem;
-      state = { ...state, items, isolationVerified: true };
+      state = { ...state, items, isolationVerified: true, playwrightArgs: [...args] };
       await this.store.save(state);
     }
 

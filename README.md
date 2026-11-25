@@ -159,7 +159,11 @@ guessing:
 | `-h`, `--help` | Show help |
 
 Everything else is forwarded to `playwright test`. Search progress is stored
-in `.playwright-leak-finder/state.json` (add it to your `.gitignore`).
+in `.playwright-leak-finder/state.json` (add it to your `.gitignore`). Resume with
+the same forwarded Playwright arguments, in the same order: a target passing
+alone under one project or config is not a baseline for another. If the
+arguments differ, the finder leaves the saved state untouched. Use `--reset`
+to switch searches.
 
 The exit code distinguishes the outcomes, so the CLI is scriptable:
 

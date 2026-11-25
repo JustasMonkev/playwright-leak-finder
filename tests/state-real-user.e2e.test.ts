@@ -12,6 +12,7 @@ const stateFile = (cwd: string): string => path.join(stateDirectory(cwd), "state
 const targetId = "scenario.spec.ts › target";
 const writerId = "scenario.spec.ts › writer";
 const singleLeakSnapshot = {
+  playwrightArgs: [],
   isolationVerified: true,
   steps: "a",
   target: targetId,
@@ -37,12 +38,37 @@ describe("persisted state through real user workflows", () => {
     return JSON.parse(await readFile(stateFile(cwd), "utf8"));
   }
 
-  it("rechecks an unverified target before resuming an older search", { timeout: 120_000 }, async () => {
+  it("does not reuse project A's isolation result in project B", { timeout: 120_000 }, async () => {
+    const cwd = await createProject({
+      "playwright.config.cjs": "module.exports = { projects: [{ name: 'A' }, { name: 'B' }], outputDir: __dirname + '/test-results' };",
+      "scenario.spec.cjs": [
+        "const { test, expect } = require('@playwright/test');",
+        "let dirty = false;",
+        "test('writer', () => { dirty = true; });",
+        "test('target', ({}, info) => { expect(dirty || info.project.name === 'B').toBe(false); });",
+      ].join("\n"),
+    });
+
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    const before = await readFile(stateFile(cwd), "utf8");
+    const changed = await runCli(cwd, "--project=B", "--auto");
+    expect(changed.stdout).not.toContain("Leak found in:");
+    expect(changed.code).toBe(2);
+    expect(changed.stdout).toContain("forwarded Playwright arguments differ");
+    expect(await readFile(stateFile(cwd), "utf8")).toBe(before);
+    expect((await runCli(cwd, "--project=A")).stdout).toContain("Leak found in: scenario.spec.cjs › writer");
+    await runCli(cwd, "--reset");
+    const independent = await runCli(cwd, "--project=B");
+    expect(independent.code).toBe(2);
+    expect(independent.stdout).toContain("unexpected outcome on its own");
+  });
+
+  it.each([{}, { isolationVerified: true }])("rechecks legacy isolation without argument context: %j", { timeout: 120_000 }, async (legacy) => {
     const cwd = await project("single-leak.spec.ts");
     const spec = path.join(cwd, "scenario.spec.ts");
     const original = await readFile(spec, "utf8");
     await writeFile(spec, original.replace("expect(shared)", "test.skip(shared.length === 0); expect(shared)"));
-    const oldState = JSON.stringify({ steps: "a", target: targetId, items: singleLeakSnapshot.items });
+    const oldState = JSON.stringify({ ...legacy, steps: "a", target: targetId, items: singleLeakSnapshot.items });
     await mkdir(stateDirectory(cwd));
     await writeFile(stateFile(cwd), oldState);
 
