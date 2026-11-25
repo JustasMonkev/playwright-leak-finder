@@ -91,7 +91,7 @@ describe("LeakFinder", () => {
     const items = suite(["one", sameId ? "one" : "two", "three", "four", "target"]);
     const target = items[4]!.id;
     const store = new MemoryStateStore();
-    await store.save({ items, target, steps });
+    await store.save({ items, target, steps, isolationVerified: true });
     const runner: TestRunner = {
       list: async () => items,
       run: async () => ({
@@ -141,7 +141,7 @@ describe("LeakFinder", () => {
     const report = await new LeakFinder(runner, store).run();
 
     expect(report.lines).toContain("Suspects remaining: 3");
-    expect(await store.load()).toEqual({ items, target, steps: "aa" });
+    expect(await store.load()).toEqual({ items, target, steps: "aa", isolationVerified: true });
   });
 
   it("sets the target on the first failing run", async () => {
@@ -246,10 +246,37 @@ describe("LeakFinder", () => {
     const result = await finder.run();
 
     expect(result.lines[0]).toBe(
-      "demo.spec.ts › test3 fails on its own, so no earlier test is leaking into it.",
+      "demo.spec.ts › test3 has an unexpected outcome on its own; no earlier test is needed to reproduce it.",
     );
     expect(result.leakCandidate).toBeNull();
     expect((await store.load()).target).toBeNull();
+  });
+
+  it.each([
+    { name: "no test", titles: [] },
+    { name: "a different test", titles: ["other"] },
+    { name: "the same display ID at another line", titles: ["target"], line: 100 },
+    { name: "multiple tests", titles: ["other", "target"] },
+  ])("does not start a search when the isolation run selects $name", async ({ titles, line }) => {
+    const [writer, target] = suite(["writer", "target"]);
+    const isolated = titles.map((title) => ({
+      ...target!,
+      id: `demo.spec.ts › ${title}`,
+      line: line ?? target!.line,
+      status: "passed" as const,
+    }));
+    const runner: TestRunner = {
+      list: async () => [],
+      run: async (options) => options?.locations
+        ? { exitCode: 0, results: isolated }
+        : { exitCode: 1, results: [{ ...writer!, status: "passed" }, { ...target!, status: "failed" }] },
+    };
+    const store = new MemoryStateStore();
+    const report = await new LeakFinder(runner, store).run();
+
+    expect(report).toMatchObject({ done: true, leakCandidate: null });
+    expect(report.lines[0]).toContain("inconclusive");
+    expect(await store.load()).toEqual(emptyState());
   });
 
   it("stops instead of looping when no single test reproduces the failure", async () => {
