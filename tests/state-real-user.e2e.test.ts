@@ -80,6 +80,32 @@ describe("persisted state through real user workflows", () => {
     expect(await readFile(stateFile(cwd), "utf8")).toBe(oldState);
   });
 
+  it("does not discard project B's writer using a legacy partition from project A", { timeout: 120_000 }, async () => {
+    const cwd = await createProject({
+      "playwright.config.cjs": "module.exports = { projects: [{ name: 'A' }, { name: 'B' }] };",
+      "scenario.spec.cjs": [
+        "const { test, expect } = require('@playwright/test');",
+        "let dirty = false;",
+        "test('writer in B', ({}, info) => { dirty = info.project.name === 'B'; });",
+        "test('innocent one', () => {});",
+        "test('writer in A', ({}, info) => { if (info.project.name === 'A') dirty = true; });",
+        "test('innocent two', () => {});",
+        "test('target', () => { expect(dirty).toBe(false); });",
+      ].join("\n"),
+    });
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    const legacy = JSON.parse(await readFile(stateFile(cwd), "utf8"));
+    expect(legacy.steps).toBe("ba");
+    delete legacy.playwrightArgs;
+    await writeFile(stateFile(cwd), JSON.stringify(legacy));
+
+    const result = await runCli(cwd, "--auto", "--project=B");
+    expect(result.stdout).toContain("Leak found in: scenario.spec.cjs › writer in B");
+    expect(result.code).toBe(0);
+    expect(await savedState(cwd)).toMatchObject({ playwrightArgs: ["--project=B"] });
+  });
+
   it("keeps status and reset truthful before, during, and after a search", { timeout: 120_000 }, async () => {
     const cwd = await project("single-leak.spec.ts");
 

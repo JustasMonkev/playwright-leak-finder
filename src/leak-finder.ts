@@ -27,12 +27,12 @@ export class LeakFinder {
 
   async run(passthroughArgs: string[] = []): Promise<LeakFinderReport> {
     const state = await this.store.load();
-    if (state.target === null) {
-      return this.captureTarget(passthroughArgs);
-    }
     const savedArgs = state.playwrightArgs;
-    if (savedArgs && (savedArgs.length !== passthroughArgs.length ||
-      savedArgs.some((arg, index) => arg !== passthroughArgs[index]))) {
+    if (state.target === null || savedArgs === undefined) {
+      return this.captureTarget(passthroughArgs, state.target);
+    }
+    if (savedArgs.length !== passthroughArgs.length ||
+      savedArgs.some((arg, index) => arg !== passthroughArgs[index])) {
       return done([
         "The forwarded Playwright arguments differ from those used for the saved search.",
         "Use the same arguments to resume it, or run --reset before starting a different search.",
@@ -42,7 +42,7 @@ export class LeakFinder {
   }
 
   /** First run: execute the suite until something fails and remember it. */
-  private async captureTarget(args: string[]): Promise<LeakFinderReport> {
+  private async captureTarget(args: string[], savedTarget: string | null): Promise<LeakFinderReport> {
     const { results } = await this.runner.run({
       stopOnFirstFailure: true,
       passthroughArgs: args,
@@ -58,6 +58,12 @@ export class LeakFinder {
     const failure = results[failureIndex];
     if (!failure) {
       return done(["No test failed: there is no target to bisect."]);
+    }
+    if (savedTarget !== null && failure.id !== savedTarget) {
+      return done([
+        `The first failure was ${failure.id}, not the saved target ${savedTarget}.`,
+        "The saved search is unchanged. Run --reset to start a different search.",
+      ]);
     }
 
     const isolationProblem = await this.verifyIsolation(failure, args);
@@ -132,10 +138,10 @@ export class LeakFinder {
       ]);
     }
 
-    if (state.isolationVerified !== true || state.playwrightArgs === undefined) {
+    if (state.isolationVerified !== true) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
       if (isolationProblem) return isolationProblem;
-      state = { ...state, items, isolationVerified: true, playwrightArgs: [...args] };
+      state = { ...state, items, isolationVerified: true };
       await this.store.save(state);
     }
 

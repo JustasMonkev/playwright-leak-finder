@@ -130,18 +130,32 @@ describe("LeakFinder", () => {
     expect((await finder.run()).leakCandidate).toBe(items[0]!.id);
   });
 
-  it("resumes a legacy search and saves the collected suite with the next step", async () => {
+  it.each(["missing snapshot", "exhausted partition"])("recaptures a legacy search: %s", async (legacy) => {
     const items = suite(["one", "two", "three", "four", "five", "target", "after"]);
     const target = items[5]!.id;
     const listed = items.map((item) => ({ ...item, runnerMetadata: 1n }));
     const runner = new FakeRunner(listed, items[0]!.id, target);
     const store = new MemoryStateStore();
-    await store.save({ steps: "bb", target, items: [] });
+    await store.save({ steps: "bbba", target, items: legacy === "missing snapshot" ? [] : items.slice(1, 6) });
 
     const report = await new LeakFinder(runner, store).run();
 
-    expect(report.lines).toContain("Suspects remaining: 3");
-    expect(await store.load()).toEqual({ items, target, steps: "aa", isolationVerified: true, playwrightArgs: [] });
+    expect(report.lines).toContain("Suspects remaining: 5");
+    expect(await store.load()).toEqual({ items: items.slice(0, 6), target, steps: "a", isolationVerified: true, playwrightArgs: [] });
+  });
+
+  it("keeps a legacy search untouched when a different test fails first", async () => {
+    const items = suite(["writer", "new target", "old target"]);
+    const runner = new FakeRunner(items, items[0]!.id, items[1]!.id);
+    const store = new MemoryStateStore();
+    const legacy = { steps: "a", target: items[2]!.id, items };
+    await store.save(legacy);
+
+    const report = await new LeakFinder(runner, store).run(["--project=B"]);
+
+    expect(report.done).toBe(true);
+    expect(report.lines[0]).toContain("not the saved target");
+    expect(await store.load()).toEqual(legacy);
   });
 
   it("sets the target on the first failing run", async () => {
@@ -328,7 +342,7 @@ describe("LeakFinder", () => {
 
   it("runs everything when the target is no longer collected", async () => {
     const store = new MemoryStateStore();
-    await store.save({ steps: "a", target: "demo.spec.ts › removed", items: suite(["test1", "test2", "test3", "test4", "test5", "test6"]) });
+    await store.save({ steps: "a", target: "demo.spec.ts › removed", items: suite(["test1", "test2", "test3", "test4", "test5", "test6"]), playwrightArgs: [] });
     const finder = new LeakFinder(leakySuite(), store);
 
     const result = await finder.run();
@@ -345,7 +359,7 @@ describe("LeakFinder", () => {
       "none",
     );
     const store = new MemoryStateStore();
-    await store.save({ steps: "a", target: "demo.spec.ts › test1", items: suite(["test1", "test2"]) });
+    await store.save({ steps: "a", target: "demo.spec.ts › test1", items: suite(["test1", "test2"]), playwrightArgs: [] });
     const finder = new LeakFinder(runner, store);
 
     const result = await finder.run();
