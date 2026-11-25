@@ -12,6 +12,8 @@ export interface SuiteItem {
 export interface LeakFinderState {
   /** Sequence of "a"/"b" partition choices taken so far. */
   steps: string;
+  /** Next individual replay after the binary search ran out of candidates. */
+  singletonIndex?: number;
   /** Absent in saved searches that predate mandatory verification of the isolated target. */
   isolationVerified?: true;
   /** Id of the failing test whose leak we are hunting, if any. */
@@ -94,6 +96,18 @@ function parseState(value: unknown): LeakFinderState | null {
   if (!isRecord(value)) {
     return null;
   }
+  const state = parseBisectionState(value);
+  if (!state || value.singletonIndex === undefined) return state;
+
+  const index = value.singletonIndex;
+  if (typeof index !== "number" || !Number.isSafeInteger(index) ||
+      index < 0 || index >= state.items.findIndex((item) => item.id === state.target)) {
+    return null;
+  }
+  return { ...state, singletonIndex: index };
+}
+
+function parseBisectionState(value: Record<string, unknown>): LeakFinderState | null {
   const { steps, target, items } = value;
   if (
     typeof steps !== "string" ||

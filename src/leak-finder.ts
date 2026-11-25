@@ -1,4 +1,4 @@
-import { selectPartition, suspectRange, type SuspectRange } from "./bizect";
+import { nextUncheckedSingleton, selectPartition, suspectRange, type SuspectRange } from "./bizect";
 import type { TestResult, TestRunner } from "./playwright";
 import type { LeakFinderState, StateStore, SuiteItem } from "./state";
 
@@ -113,15 +113,14 @@ export class LeakFinder {
       return done([reason, `Current target is: ${state.target}`]);
     }
 
-    const range = suspectRange(targetIndex, state.steps);
-    const suspectCount = range.end - range.start;
-    if (suspectCount === 0) {
-      return done([
-        "The search cannot narrow any further: no single earlier test makes the target fail.",
-        "The leak probably needs more than one test, so bisection cannot pin it down.",
-        "Run --reset to start over.",
-      ]);
+    let range = suspectRange(targetIndex, state.steps);
+    const scanning = range.start === range.end;
+    if (scanning) {
+      const index = nextUncheckedSingleton(targetIndex, state.steps, state.singletonIndex ?? 0);
+      if (index >= targetIndex) return noSingleLeak();
+      range = { start: index, end: index + 1 };
     }
+    const suspectCount = range.end - range.start;
 
     if (state.isolationVerified !== true) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
@@ -165,11 +164,25 @@ export class LeakFinder {
       );
     }
 
-    // Narrow to the half that still hides the leak, then test its first half ("a") next.
+    // A passing group can mask a leaking member. If the binary path ends
+    // without a witness, check the singletons it never replayed on their own.
     const narrowedSteps = targetFailed ? state.steps : otherHalfSteps(state.steps);
-    const nextState: LeakFinderState = { ...state, steps: `${narrowedSteps}a`, items };
-    await this.store.save(nextState);
+    const nextState: LeakFinderState = scanning
+      ? { ...state, items }
+      : { ...state, steps: `${narrowedSteps}a`, items };
     const remaining = suspectRange(targetIndex, narrowedSteps);
+    if (scanning || remaining.start === remaining.end) {
+      const next = nextUncheckedSingleton(targetIndex, nextState.steps, scanning ? range.end : 0);
+      if (next >= targetIndex) return noSingleLeak();
+      await this.store.save({ ...nextState, singletonIndex: next });
+      return progress([
+        scanning
+          ? "This individual test did not reproduce the failure."
+          : "Bisection exhausted its path; another test could have masked a leak in a passing group.",
+        `Next individual replay: ${items[next]!.id}`,
+      ]);
+    }
+    await this.store.save(nextState);
     return progress([
       targetFailed
         ? "The group selected still fails. Let's do a new partition."
@@ -178,6 +191,14 @@ export class LeakFinder {
       `Current target is: ${nextState.target}`,
     ]);
   }
+}
+
+function noSingleLeak(): LeakFinderReport {
+  return done([
+    "No individual predecessor reproduced the target failure in this search.",
+    "The original failure may require a combination of tests, or may not reproduce consistently.",
+    "Run --reset to start over.",
+  ]);
 }
 
 function matchesSelection(

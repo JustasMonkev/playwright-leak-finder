@@ -39,7 +39,7 @@ export function suspectRange(suspectCount: number, steps: string): SuspectRange 
   let end = suspectCount;
   for (const step of steps) {
     // Odd-sized pools give the extra suspect to the first half ("a").
-    const middle = start + Math.ceil((end - start) / 2);
+    const middle = firstHalfEnd(start, end);
     if (step === "a") {
       end = middle;
     } else {
@@ -47,6 +47,25 @@ export function suspectRange(suspectCount: number, steps: string): SuspectRange 
     }
   }
   return { start, end };
+}
+
+function firstHalfEnd(start: number, end: number): number {
+  return start + Math.ceil((end - start) / 2);
+}
+
+/** Skip singleton replays already observed on the exhausted binary-search path. */
+export function nextUncheckedSingleton(count: number, steps: string, from: number): number {
+  let start = 0;
+  let end = count;
+  for (const step of steps) {
+    if (start === end) break;
+    // Each decision followed a replay of the first half, even when we took "b".
+    const middle = firstHalfEnd(start, end);
+    if (middle === start + 1 && from === start) from++;
+    if (step === "a") end = middle;
+    else start = middle;
+  }
+  return from;
 }
 
 export function selectPartition<T>(

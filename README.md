@@ -14,7 +14,11 @@ The first run executes the suite until a test fails and records it as the
 **target**. Each following run executes half of the tests that previously ran
 before the target, plus the target itself. If the target still fails, the leak
 is in that half, so it gets bisected again; if it passes, the search moves to
-the other half — until a single leaking test remains.
+the other half. If bisection runs out of candidates, a passing group may have
+contained both a leaking test and one that cleaned up after it. The finder then
+replays each still-untested predecessor individually with the target. This
+fallback needs at most one additional Playwright run per predecessor; manual
+and automatic searches both resume from the saved step.
 
 ## Installation
 

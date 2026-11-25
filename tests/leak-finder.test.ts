@@ -280,10 +280,10 @@ describe("LeakFinder", () => {
   });
 
   it("stops instead of looping when no single test reproduces the failure", async () => {
-    // The victim only fails when BOTH earlier tests ran, so every half passes
-    // and bisection can never pin it on one test.
+    // The first group still fails, but no individual test does.
+    const singletons: string[] = [];
     class PairLeakRunner implements TestRunner {
-      private readonly items = suite(["test1", "test2", "test3"]);
+      private readonly items = suite(["test1", "test2", "test3", "test4", "test5", "test6", "target"]);
 
       async list(): Promise<TestItem[]> {
         return this.items;
@@ -298,11 +298,12 @@ describe("LeakFinder", () => {
             )
           : this.items;
         const ids = selected.map((item) => item.id);
+        if (ids.length === 2) singletons.push(ids[0]!);
         const fails =
           ids.includes("demo.spec.ts › test1") && ids.includes("demo.spec.ts › test2");
         const results: RunOutcome["results"] = selected.map((item) => ({
           ...item,
-          status: item.id === "demo.spec.ts › test3" && fails ? "failed" : "passed",
+          status: item.id === "demo.spec.ts › target" && fails ? "failed" : "passed",
         }));
         return {
           exitCode: results.some((r) => r.status === "failed") ? 1 : 0,
@@ -316,14 +317,15 @@ describe("LeakFinder", () => {
     await finder.run();
 
     let result = await finder.run();
-    for (let step = 0; step < 10 && !result.lines[0]!.startsWith("The search"); step += 1) {
+    for (let step = 0; step < 10 && !result.done; step += 1) {
       result = await finder.run();
     }
 
     expect(result.lines[0]).toBe(
-      "The search cannot narrow any further: no single earlier test makes the target fail.",
+      "No individual predecessor reproduced the target failure in this search.",
     );
     expect(result.leakCandidate).toBeNull();
+    expect(singletons.sort()).toEqual(suite(["test1", "test2", "test3", "test4", "test5", "test6"]).map((item) => item.id));
   });
 
   it("runs everything when the target is no longer collected", async () => {

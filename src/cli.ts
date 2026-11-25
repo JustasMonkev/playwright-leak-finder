@@ -36,7 +36,10 @@ async function printStatus(store: FileStateStore): Promise<void> {
     console.log("No active search. Run playwright-leak-finder to start one.");
     return;
   }
-  console.log(`Current target is: ${state.target}\nNext step: ${state.steps}`);
+  const step = state.singletonIndex === undefined
+    ? state.steps
+    : `individual replay of ${state.items[state.singletonIndex]!.id}`;
+  console.log(`Current target is: ${state.target}\nNext step: ${step}`);
 }
 
 async function runSearch(
