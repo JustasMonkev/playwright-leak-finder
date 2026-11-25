@@ -161,6 +161,13 @@ guessing:
 Everything else is forwarded to `playwright test`. Search progress is stored
 in `.playwright-leak-finder/state.json` (add it to your `.gitignore`).
 
+Each CLI invocation uses its own temporary Playwright transform cache so
+concurrent searches cannot erase each other's TypeScript source maps. Steps
+within the invocation reuse that cache. If you set
+`PLAYWRIGHT_TRANSFORM_CACHE_DIR` or `PWTEST_CACHE_DIR`, the CLI leaves your
+cache configuration unchanged. Playwright's test artifact directories are
+unchanged as well.
+
 The exit code distinguishes the outcomes, so the CLI is scriptable:
 
 | Code | Meaning |
