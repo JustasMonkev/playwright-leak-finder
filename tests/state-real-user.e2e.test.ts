@@ -14,6 +14,7 @@ const writerId = "scenario.spec.ts › writer";
 const singleLeakSnapshot = {
   playwrightArgs: [],
   isolationVerified: true,
+  allIsolatedRepeatsVerified: true,
   steps: "a",
   target: targetId,
   items: [

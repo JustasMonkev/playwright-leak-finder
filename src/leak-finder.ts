@@ -76,6 +76,7 @@ export class LeakFinder {
       steps: "a",
       target: failure.id,
       isolationVerified: true,
+      allIsolatedRepeatsVerified: true,
       playwrightArgs: [...args],
       items: results.map(snapshotItem),
     };
@@ -142,10 +143,10 @@ export class LeakFinder {
       ]);
     }
 
-    if (state.isolationVerified !== true) {
+    if (state.allIsolatedRepeatsVerified !== true) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
       if (isolationProblem) return isolationProblem;
-      state = { ...state, items, isolationVerified: true };
+      state = { ...state, items, isolationVerified: true, allIsolatedRepeatsVerified: true };
       await this.store.save(state);
     }
 
