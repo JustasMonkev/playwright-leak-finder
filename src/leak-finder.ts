@@ -1,5 +1,6 @@
 import { selectPartition, suspectRange, type SuspectRange } from "./bizect";
 import type { TestResult, TestRunner } from "./playwright";
+import { parseProjectFilters } from "./playwright-options";
 import type { LeakFinderState, StateStore, SuiteItem } from "./state";
 
 export interface LeakFinderReport {
@@ -33,6 +34,8 @@ export class LeakFinder {
     }
     if (savedArgs.length !== passthroughArgs.length ||
       savedArgs.some((arg, index) => arg !== passthroughArgs[index])) {
+      // This path bypasses the runner, but reserved flags are still CLI errors.
+      parseProjectFilters(passthroughArgs);
       return done([
         "The forwarded Playwright arguments differ from those used for the saved search.",
         "Use the same arguments to resume it, or run --reset before starting a different search.",

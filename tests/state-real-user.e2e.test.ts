@@ -51,6 +51,11 @@ describe("persisted state through real user workflows", () => {
 
     expect((await runCli(cwd, "--project=A")).code).toBe(0);
     const before = await readFile(stateFile(cwd), "utf8");
+    const invalid = await runCli(cwd, "--project=A", "--workers=2");
+    expect(invalid.code).toBe(1);
+    expect(invalid.stderr).toContain("Cannot forward --workers=2");
+    expect(await readFile(stateFile(cwd), "utf8")).toBe(before);
+
     const changed = await runCli(cwd, "--project=B", "--auto");
     expect(changed.stdout).not.toContain("Leak found in:");
     expect(changed.code).toBe(2);
