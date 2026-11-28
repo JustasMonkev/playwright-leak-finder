@@ -344,6 +344,7 @@ describe("LeakFinder", () => {
       "No individual predecessor reproduced the target failure in this search.",
     );
     expect(result.leakCandidate).toBeNull();
+    expect(await finder.run()).toEqual(result);
     expect(singletons.sort()).toEqual(suite(["test1", "test2", "test3", "test4", "test5", "test6"]).map((item) => item.id));
   });
 

@@ -12,7 +12,7 @@ export interface SuiteItem {
 export interface LeakFinderState {
   /** Sequence of "a"/"b" partition choices taken so far. */
   steps: string;
-  /** Next individual replay after the binary search ran out of candidates. */
+  /** Next predecessor to replay; the target index means all predecessors were checked. */
   singletonIndex?: number;
   /** Absent in saved searches that predate mandatory verification of the isolated target. */
   isolationVerified?: true;
@@ -105,7 +105,7 @@ function parseState(value: unknown): LeakFinderState | null {
 
   const index = value.singletonIndex;
   if (typeof index !== "number" || !Number.isSafeInteger(index) ||
-      index < 0 || index >= state.items.findIndex((item) => item.id === state.target)) {
+      index < 0 || index > state.items.findIndex((item) => item.id === state.target)) {
     return null;
   }
   return { ...state, singletonIndex: index };

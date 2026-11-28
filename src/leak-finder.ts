@@ -193,8 +193,8 @@ export class LeakFinder {
     const remaining = suspectRange(targetIndex, narrowedSteps);
     if (scanning || remaining.start === remaining.end) {
       const next = nextUncheckedSingleton(targetIndex, nextState.steps, scanning ? range.end : 0);
-      if (next >= targetIndex) return noSingleLeak();
       await this.store.save({ ...nextState, singletonIndex: next });
+      if (next >= targetIndex) return noSingleLeak();
       return progress([
         scanning
           ? "This individual test did not reproduce the failure."

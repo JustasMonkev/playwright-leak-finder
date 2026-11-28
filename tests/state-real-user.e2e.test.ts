@@ -237,6 +237,13 @@ describe("persisted state through real user workflows", () => {
     );
     expect(result.stdout).not.toContain("Leak found in:");
     expect(existsSync(stateFile(cwd))).toBe(true);
+
+    // A completed search must not start Playwright, even on a later CLI invocation.
+    await writeFile(path.join(cwd, "playwright.config.ts"), 'throw new Error("unexpected replay");');
+    const resumed = await runCli(cwd, "--auto");
+    expect(resumed.code).toBe(2);
+    expect(resumed.stdout).toContain("No individual predecessor reproduced");
+    expect((await runCli(cwd, "--status")).stdout).toContain("Search finished");
   });
 
   it("keeps completed state stable across a repeated invocation", { timeout: 120_000 }, async () => {
