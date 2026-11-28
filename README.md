@@ -141,8 +141,7 @@ guessing:
   that fails intermittently will send the search down the wrong half.
 - **An unverified target.** The target must meet its Playwright expectation when run alone. If the
   location selects other tests, misses the target, or the target skips when
-  run alone, the search is inconclusive. Older saved searches verify this once
-  before resuming their existing partition.
+  run alone, the search is inconclusive.
 - **A replay that no longer matches the search.** Locations are selected by
   `file:line`. If a file edit, a shared line, or a change in execution order
   means the same tests no longer run in the original order, the step
@@ -159,7 +158,14 @@ guessing:
 | `-h`, `--help` | Show help |
 
 Everything else is forwarded to `playwright test`. Search progress is stored
-in `.playwright-leak-finder/state.json` (add it to your `.gitignore`).
+in `.playwright-leak-finder/state.json` (add it to your `.gitignore`). Resume with
+the same forwarded Playwright arguments, in the same order: a target passing
+alone under one project or config is not a baseline for another. If the
+arguments differ, the finder leaves the saved state untouched. Use `--reset`
+to switch searches. Older state files did not record these arguments. On the
+next run, the finder starts bisection over only if the suite still fails first
+at the saved target and that target passes alone; otherwise it leaves the file
+unchanged.
 
 Each CLI invocation uses its own temporary Playwright transform cache so
 concurrent searches cannot erase each other's TypeScript source maps. Steps
