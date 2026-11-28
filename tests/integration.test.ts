@@ -73,6 +73,36 @@ describe("leak finder against a real Playwright project", () => {
     ]);
   });
 
+  it("keeps each selected line paired with its exact files", { timeout: 120_000 }, async () => {
+    const spec = [
+      'import { test } from "@playwright/test";',
+      'test("first", () => {});',
+      'test.skip("second", () => {});',
+    ].join("\n");
+    await mkdir(path.join(fixtureDir, "nested"));
+    for (const file of ["a.spec.ts", "nested/b[1].spec.ts", "nested/b1.spec.ts", "prefix-a.spec.ts"]) {
+      await writeFile(path.join(fixtureDir, file), spec);
+    }
+    const runner = new PlaywrightRunner({ cwd: fixtureDir });
+    const outcome = await runner.run({
+      locations: [
+        { file: "nested\\b[1].spec.ts", line: 3 },
+        { file: "a.spec.ts", line: 2 },
+        { file: "nested\\b[1].spec.ts", line: 2 },
+        { file: "a.spec.ts", line: 2 },
+      ],
+      quiet: true,
+    });
+    expect(outcome).toEqual({
+      exitCode: 0,
+      results: [
+        { id: "a.spec.ts › first", file: "a.spec.ts", line: 2, status: "passed" },
+        { id: "nested/b[1].spec.ts › first", file: "nested/b[1].spec.ts", line: 2, status: "passed" },
+        { id: "nested/b[1].spec.ts › second", file: "nested/b[1].spec.ts", line: 3, status: "skipped" },
+      ],
+    });
+  });
+
   it("selects a file reported relative to a rootDir it sits outside of", { timeout: 180_000 }, async () => {
     // A project testDir outside the top-level testDir makes Playwright report
     // files as `../outside/out.spec.ts`; the literal `..` never appears in the

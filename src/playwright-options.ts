@@ -1,4 +1,4 @@
-import type { RunOptions, TestItem } from "./playwright";
+import type { RunOptions } from "./playwright";
 
 // Letting a forwarded flag override one of these would invalidate the search.
 const RESERVED_ARGS = [
@@ -77,8 +77,35 @@ export function parseProjectFilters(args: readonly string[]): RegExp[] {
 export function buildRunArgs(options: RunOptions): string[] {
   const args = ["--workers=1"];
   if (options.stopOnFirstFailure) args.push("--max-failures=1");
-  for (const location of options.locations ?? []) {
-    args.push(formatLocationArg(location));
+  // Playwright checks each positional filter against every declaration. A
+  // single file regex for a shared line is equivalent to OR-ing its filters.
+  const byLine = new Map<number, Set<string>>();
+  for (const { file, line } of options.locations ?? []) {
+    // A line break prevents Playwright from parsing /regex/:line. Keep such
+    // a path separate so it cannot invalidate another file's filter.
+    if (/[\r\n\u2028\u2029]/u.test(file)) {
+      args.push(locationFilter([formatFilePattern(file)], line));
+      continue;
+    }
+    const files = byLine.get(line);
+    if (files) files.add(file);
+    else byLine.set(line, new Set([file]));
+  }
+  for (const [line, files] of byLine) {
+    let group: string[] = [];
+    let length = 0;
+    for (const file of files) {
+      const pattern = formatFilePattern(file);
+      // Bound individual arguments as well as the size of each compiled regex.
+      if (length && length + pattern.length > 2_048) {
+        args.push(locationFilter(group, line));
+        group = [];
+        length = 0;
+      }
+      group.push(pattern);
+      length += pattern.length + 1;
+    }
+    args.push(locationFilter(group, line));
   }
   return args;
 }
@@ -97,15 +124,19 @@ function projectPattern(name: string): RegExp {
   return new RegExp(`^${pattern}$`, "iu");
 }
 
+function locationFilter(patterns: string[], line: number): string {
+  const files = patterns.length === 1 ? patterns[0] : `(?:${patterns.join("|")})`;
+  return `/[/\\\\]${files}$/:${line}`;
+}
+
 // Playwright treats file:line arguments as regexes against absolute paths.
-function formatLocationArg({ file, line }: Pick<TestItem, "file" | "line">): string {
+function formatFilePattern(file: string): string {
   const segments = file.split(/[/\\]/u);
   // Resolved paths no longer contain the leading ".." of an external testDir.
   while (segments[0] === "..") {
     segments.shift();
   }
-  const pattern = segments.map(escapeRegex).join("[/\\\\]");
-  return `/[/\\\\]${pattern}$/:${line}`;
+  return segments.map(escapeRegex).join("[/\\\\]");
 }
 
 function escapeRegex(value: string): string {
