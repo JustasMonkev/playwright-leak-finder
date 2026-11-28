@@ -14,6 +14,8 @@ export interface LeakFinderState {
   steps: string;
   /** Absent in saved searches that predate mandatory verification of the isolated target. */
   isolationVerified?: true;
+  /** Older isolation checks could count a pass and a skip together as a pass. */
+  allIsolatedRepeatsVerified?: true;
   /** Forwarded arguments for which the isolation result was observed. Absent in older searches. */
   playwrightArgs?: string[];
   /** Id of the failing test whose leak we are hunting, if any. */
@@ -115,6 +117,7 @@ function parseState(value: unknown): LeakFinderState | null {
   )) return null;
   const state: LeakFinderState = { steps, target, items };
   if (value.isolationVerified === true) state.isolationVerified = true;
+  if (value.allIsolatedRepeatsVerified === true) state.allIsolatedRepeatsVerified = true;
   if (playwrightArgs !== undefined) state.playwrightArgs = playwrightArgs;
   return state;
 }

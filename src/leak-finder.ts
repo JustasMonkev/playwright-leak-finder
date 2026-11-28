@@ -76,6 +76,7 @@ export class LeakFinder {
       steps: "a",
       target: failure.id,
       isolationVerified: true,
+      allIsolatedRepeatsVerified: true,
       playwrightArgs: [...args],
       items: results.map(snapshotItem),
     };
@@ -93,6 +94,7 @@ export class LeakFinder {
       locations: [target],
       passthroughArgs: args,
       quiet: true,
+      requireAllRepeats: true,
     });
     const alone = isolated.length === 1 ? isolated[0] : undefined;
     const verdict = alone?.id === target.id && alone.file === target.file && alone.line === target.line
@@ -141,10 +143,10 @@ export class LeakFinder {
       ]);
     }
 
-    if (state.isolationVerified !== true) {
+    if (state.allIsolatedRepeatsVerified !== true) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
       if (isolationProblem) return isolationProblem;
-      state = { ...state, items, isolationVerified: true };
+      state = { ...state, items, isolationVerified: true, allIsolatedRepeatsVerified: true };
       await this.store.save(state);
     }
 

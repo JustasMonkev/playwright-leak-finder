@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { createProject, repoRoot, runCli } from "./e2e-helpers";
@@ -74,6 +74,44 @@ describe("CLI end-to-end", () => {
     expect(result.stdout).toContain("inconclusive");
     expect(result.stdout).not.toContain("Leak found in:");
     expect(existsSync(stateFile(dir))).toBe(false);
+  });
+
+  it("stops when the target passes one isolated repeat and skips another", { timeout: 120_000 }, async () => {
+    const dir = await createProject({
+      "playwright.config.ts": 'export default { testDir: ".", repeatEach: 2 };',
+      "repeat.spec.ts": `import { expect, test } from "@playwright/test";
+        let ready = false;
+        test("prerequisite", () => { ready = true; });
+        test("target", ({}, info) => {
+          if (info.repeatEachIndex === 0) return;
+          test.skip(!ready);
+          expect(1).toBe(2);
+        });`,
+    });
+
+    const result = await runCli(dir, "--auto");
+
+    expect(result.code).toBe(2);
+    expect(result.stdout).toContain("inconclusive");
+    expect(result.stdout).not.toContain("Leak found in:");
+    expect(existsSync(stateFile(dir))).toBe(false);
+
+    // Older releases saved a passing isolation verdict even for these mixed repeats.
+    const target = "repeat.spec.ts › target";
+    const checkpoint = JSON.stringify({
+      steps: "a", target, isolationVerified: true, playwrightArgs: [],
+      items: [
+        { id: "repeat.spec.ts › prerequisite", file: "repeat.spec.ts", line: 3 },
+        { id: target, file: "repeat.spec.ts", line: 4 },
+      ],
+    });
+    await mkdir(stateDir(dir));
+    await writeFile(stateFile(dir), checkpoint);
+    const resumed = await runCli(dir, "--auto");
+    expect(resumed.code).toBe(2);
+    expect(resumed.stdout).toContain("inconclusive");
+    expect(resumed.stdout).not.toContain("Leak found in:");
+    expect(await readFile(stateFile(dir), "utf8")).toBe(checkpoint);
   });
 
   it("advances one step per invocation and persists state between runs", { timeout: 180_000 }, async () => {

@@ -91,7 +91,9 @@ describe("LeakFinder", () => {
     const items = suite(["one", sameId ? "one" : "two", "three", "four", "target"]);
     const target = items[4]!.id;
     const store = new MemoryStateStore();
-    await store.save({ items, target, steps, isolationVerified: true, playwrightArgs: [] });
+    await store.save({
+      items, target, steps, isolationVerified: true, allIsolatedRepeatsVerified: true, playwrightArgs: [],
+    });
     const runner: TestRunner = {
       list: async () => items,
       run: async () => ({
@@ -141,7 +143,10 @@ describe("LeakFinder", () => {
     const report = await new LeakFinder(runner, store).run();
 
     expect(report.lines).toContain("Suspects remaining: 5");
-    expect(await store.load()).toEqual({ items: items.slice(0, 6), target, steps: "a", isolationVerified: true, playwrightArgs: [] });
+    expect(await store.load()).toEqual({
+      items: items.slice(0, 6), target, steps: "a",
+      isolationVerified: true, allIsolatedRepeatsVerified: true, playwrightArgs: [],
+    });
   });
 
   it("keeps a legacy search untouched when a different test fails first", async () => {

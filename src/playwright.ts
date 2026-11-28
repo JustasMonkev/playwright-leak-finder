@@ -37,6 +37,8 @@ export interface RunOptions {
   passthroughArgs?: string[];
   /** Hide Playwright's own output, for runs the user did not ask to see. */
   quiet?: boolean;
+  /** During isolation, a mix of expected and skipped repeats cannot verify the target. */
+  requireAllRepeats?: boolean;
 }
 
 /** The Playwright child was stopped because this process received a signal. */
@@ -70,22 +72,17 @@ export class PlaywrightRunner implements TestRunner {
   }
 
   async list(passthroughArgs: string[] = []): Promise<TestItem[]> {
-    const { results } = await this.execute(["--list"], passthroughArgs, true);
+    const { results } = await this.execute(["--list"], { passthroughArgs, quiet: true });
     return results.map(({ id, file, line }) => ({ id, file, line }));
   }
 
   async run(options: RunOptions = {}): Promise<RunOutcome> {
-    return this.execute(
-      buildRunArgs(options),
-      options.passthroughArgs ?? [],
-      options.quiet ?? false,
-    );
+    return this.execute(buildRunArgs(options), options);
   }
 
   private async execute(
     controlledArgs: readonly string[],
-    passthroughArgs: readonly string[],
-    quiet: boolean,
+    { passthroughArgs = [], quiet = false, requireAllRepeats = false }: RunOptions,
   ): Promise<RunOutcome> {
     const projectFilters = parseProjectFilters(passthroughArgs);
     const outputDir = await mkdtemp(
@@ -93,7 +90,7 @@ export class PlaywrightRunner implements TestRunner {
     );
     const outputFile = path.join(outputDir, "report.json");
     try {
-      const { reporterArg, env } = await prepareReporter(this.cwd, outputFile);
+      const { reporterArg, env } = await prepareReporter(this.cwd, outputFile, requireAllRepeats);
       const args = [
         "test",
         // An empty selection is a search outcome, not a Playwright run error.
@@ -141,6 +138,7 @@ interface PreparedReporter {
 async function prepareReporter(
   cwd: string,
   outputFile: string,
+  requireAllRepeats: boolean,
 ): Promise<PreparedReporter> {
   // Use the sibling .ts in source checkouts and .mjs in the installed build.
   const moduleFile = fileURLToPath(import.meta.url);
@@ -149,6 +147,7 @@ async function prepareReporter(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PLAYWRIGHT_LEAK_FINDER_REPORT: outputFile,
+    PLAYWRIGHT_LEAK_FINDER_REQUIRE_ALL_REPEATS: requireAllRepeats ? "1" : "0",
   };
 
   // Playwright splits --reporter on commas. Prefer the relative path if it
