@@ -233,10 +233,17 @@ describe("persisted state through real user workflows", () => {
     const result = await runCli(cwd, "--auto");
     expect(result.code).toBe(2);
     expect(result.stdout).toContain(
-      "The search cannot narrow any further: no single earlier test makes the target fail.",
+      "No individual predecessor reproduced the target failure in this search.",
     );
     expect(result.stdout).not.toContain("Leak found in:");
     expect(existsSync(stateFile(cwd))).toBe(true);
+
+    // A completed search must not start Playwright, even on a later CLI invocation.
+    await writeFile(path.join(cwd, "playwright.config.ts"), 'throw new Error("unexpected replay");');
+    const resumed = await runCli(cwd, "--auto");
+    expect(resumed.code).toBe(2);
+    expect(resumed.stdout).toContain("No individual predecessor reproduced");
+    expect((await runCli(cwd, "--status")).stdout).toContain("Search finished");
   });
 
   it("keeps completed state stable across a repeated invocation", { timeout: 120_000 }, async () => {
@@ -290,5 +297,24 @@ describe("persisted state through real user workflows", () => {
     }));
     expect(directories[0]).not.toBe(directories[1]);
     expect(await savedState(cwd)).toEqual(singleLeakSnapshot);
+  });
+
+  it("finds a singleton writer masked by a cleaner in the first partition", { timeout: 120_000 }, async () => {
+    const cwd = await createProject({
+      "playwright.config.cjs": "module.exports = { outputDir: __dirname + '/test-results' };",
+      "scenario.spec.cjs": [
+        "const { test, expect } = require('@playwright/test');",
+        "let dirty = false, masked = false;",
+        "test('writer', () => { dirty = true; });",
+        "test('mask', () => { masked = true; });",
+        "test('unmask', () => { masked = false; });",
+        "test('unrelated', () => {});",
+        "test('target', () => { expect(dirty && !masked).toBe(false); });",
+      ].join("\n"),
+    });
+
+    const result = await runCli(cwd, "--auto");
+    expect(result.stdout).toContain("Leak found in: scenario.spec.cjs › writer");
+    expect(result.code).toBe(0);
   });
 });
