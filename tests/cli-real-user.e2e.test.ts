@@ -80,6 +80,47 @@ describe("CLI real-user scenarios", () => {
     expect(result.stderr).toBe("");
   });
 
+  it("reports a collection error instead of treating the suite as empty", { timeout: 30_000 }, async () => {
+    const root = await createProject({
+      "playwright.config.ts": ROOT_CONFIG,
+      "broken.spec.ts": 'throw new Error("fixture registry unavailable");',
+    });
+
+    const result = await runCli(root);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("fixture registry unavailable");
+    expect(result.stdout).not.toContain("No tests were collected");
+    expect(existsSync(path.join(root, ".playwright-leak-finder"))).toBe(false);
+  });
+
+  it("does not accept a passing isolated target when its run fails outside a test", { timeout: 120_000 }, async () => {
+    const root = await createProject({
+      "playwright.config.cjs": 'module.exports = { globalTeardown: "./teardown.cjs" };',
+      "teardown.cjs": [
+        'const { existsSync, unlinkSync } = require("node:fs");',
+        'module.exports = () => {',
+        '  if (!existsSync("writer-ran")) throw new Error("isolated teardown failed");',
+        '  unlinkSync("writer-ran");',
+        '};',
+      ].join("\n"),
+      "leaky.spec.ts": [
+        'import { expect, test } from "@playwright/test";',
+        'import { writeFileSync } from "node:fs";',
+        'let leaked = false;',
+        'test("writer", () => { leaked = true; writeFileSync("writer-ran", ""); });',
+        'test("target", () => expect(leaked).toBe(false));',
+      ].join("\n"),
+    });
+
+    const result = await runCli(root, "--auto");
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("isolated teardown failed");
+    expect(result.stdout).not.toContain("Target set to:");
+    expect(existsSync(path.join(root, ".playwright-leak-finder"))).toBe(false);
+  });
+
   it("reports an unknown Playwright option on stderr and does not create state", { timeout: 30_000 }, async () => {
     const root = await createProject({
       "playwright.config.ts": ROOT_CONFIG,

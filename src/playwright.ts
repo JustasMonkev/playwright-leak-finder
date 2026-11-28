@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildRunArgs, parseProjectFilters } from "./playwright-options";
-import type { ProjectReport } from "./playwright-report";
+import type { ProjectReport, RunReport } from "./playwright-report";
 
 export interface TestItem {
   /** Stable id: relative file path plus the full title path. */
@@ -37,6 +37,8 @@ export interface RunOptions {
   passthroughArgs?: string[];
   /** Hide Playwright's own output, for runs the user did not ask to see. */
   quiet?: boolean;
+  /** During isolation, a mix of expected and skipped repeats cannot verify the target. */
+  requireAllRepeats?: boolean;
 }
 
 /** The Playwright child was stopped because this process received a signal. */
@@ -70,22 +72,17 @@ export class PlaywrightRunner implements TestRunner {
   }
 
   async list(passthroughArgs: string[] = []): Promise<TestItem[]> {
-    const { results } = await this.execute(["--list"], passthroughArgs, true);
+    const { results } = await this.execute(["--list"], { passthroughArgs, quiet: true });
     return results.map(({ id, file, line }) => ({ id, file, line }));
   }
 
   async run(options: RunOptions = {}): Promise<RunOutcome> {
-    return this.execute(
-      buildRunArgs(options),
-      options.passthroughArgs ?? [],
-      options.quiet ?? false,
-    );
+    return this.execute(buildRunArgs(options), options);
   }
 
   private async execute(
     controlledArgs: readonly string[],
-    passthroughArgs: readonly string[],
-    quiet: boolean,
+    { passthroughArgs = [], quiet = false, requireAllRepeats = false }: RunOptions,
   ): Promise<RunOutcome> {
     const projectFilters = parseProjectFilters(passthroughArgs);
     const outputDir = await mkdtemp(
@@ -93,9 +90,11 @@ export class PlaywrightRunner implements TestRunner {
     );
     const outputFile = path.join(outputDir, "report.json");
     try {
-      const { reporterArg, env } = await prepareReporter(this.cwd, outputFile);
+      const { reporterArg, env } = await prepareReporter(this.cwd, outputFile, requireAllRepeats);
       const args = [
         "test",
+        // An empty selection is a search outcome, not a Playwright run error.
+        "--pass-with-no-tests",
         `--reporter=${quiet ? "" : "list,"}${reporterArg}`,
         ...controlledArgs,
         ...passthroughArgs,
@@ -139,6 +138,7 @@ interface PreparedReporter {
 async function prepareReporter(
   cwd: string,
   outputFile: string,
+  requireAllRepeats: boolean,
 ): Promise<PreparedReporter> {
   // Use the sibling .ts in source checkouts and .mjs in the installed build.
   const moduleFile = fileURLToPath(import.meta.url);
@@ -147,6 +147,7 @@ async function prepareReporter(
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     PLAYWRIGHT_LEAK_FINDER_REPORT: outputFile,
+    PLAYWRIGHT_LEAK_FINDER_REQUIRE_ALL_REPEATS: requireAllRepeats ? "1" : "0",
   };
 
   // Playwright splits --reporter on commas. Prefer the relative path if it
@@ -228,10 +229,10 @@ async function readReport(
   exitCode: number,
   projectFilters: readonly RegExp[],
 ): Promise<TestResult[]> {
-  let reports: ProjectReport[];
+  let run: RunReport;
   try {
-    // The child writes this private file using the same ProjectReport contract.
-    reports = JSON.parse(await readFile(file, "utf8")) as ProjectReport[];
+    // The parent and its private reporter ship together.
+    run = JSON.parse(await readFile(file, "utf8")) as RunReport;
   } catch (cause) {
     throw new Error(
       `Playwright exited with code ${exitCode} without producing a JSON report`,
@@ -239,9 +240,20 @@ async function readReport(
     );
   }
 
+  // Check all projects before filtering: a failed dependency teardown can
+  // explain the exit code without invalidating the selected tests' verdicts.
+  if (exitCode !== 0 && !run.projects.some((project) =>
+    project.results.some((test) => test.status === "failed"),
+  )) {
+    throw new Error(
+      `Playwright exited with code ${exitCode} without a failing test.` +
+        (run.firstError ? `\n${run.firstError}` : ""),
+    );
+  }
+
   const selected: ProjectReport[] = [];
   const dependencies: ProjectReport[] = [];
-  for (const report of reports) {
+  for (const report of run.projects) {
     if (projectFilters.length === 0 || projectFilters.some((pattern) => pattern.test(report.name))) {
       selected.push(report);
     } else {

@@ -1,5 +1,6 @@
 import { nextUncheckedSingleton, selectPartition, suspectRange, type SuspectRange } from "./bizect";
 import type { TestResult, TestRunner } from "./playwright";
+import { parseProjectFilters } from "./playwright-options";
 import type { LeakFinderState, StateStore, SuiteItem } from "./state";
 
 export interface LeakFinderReport {
@@ -27,14 +28,24 @@ export class LeakFinder {
 
   async run(passthroughArgs: string[] = []): Promise<LeakFinderReport> {
     const state = await this.store.load();
-    if (state.target === null) {
-      return this.captureTarget(passthroughArgs);
+    const savedArgs = state.playwrightArgs;
+    if (state.target === null || savedArgs === undefined) {
+      return this.captureTarget(passthroughArgs, state.target);
+    }
+    if (savedArgs.length !== passthroughArgs.length ||
+      savedArgs.some((arg, index) => arg !== passthroughArgs[index])) {
+      // This path bypasses the runner, but reserved flags are still CLI errors.
+      parseProjectFilters(passthroughArgs);
+      return done([
+        "The forwarded Playwright arguments differ from those used for the saved search.",
+        "Use the same arguments to resume it, or run --reset before starting a different search.",
+      ]);
     }
     return this.bisect(state, passthroughArgs);
   }
 
   /** First run: execute the suite until something fails and remember it. */
-  private async captureTarget(args: string[]): Promise<LeakFinderReport> {
+  private async captureTarget(args: string[], savedTarget: string | null): Promise<LeakFinderReport> {
     const { results } = await this.runner.run({
       stopOnFirstFailure: true,
       passthroughArgs: args,
@@ -51,6 +62,12 @@ export class LeakFinder {
     if (!failure) {
       return done(["No test failed: there is no target to bisect."]);
     }
+    if (savedTarget !== null && failure.id !== savedTarget) {
+      return done([
+        `The first failure was ${failure.id}, not the saved target ${savedTarget}.`,
+        "The saved search is unchanged. Run --reset to start a different search.",
+      ]);
+    }
 
     const isolationProblem = await this.verifyIsolation(failure, args);
     if (isolationProblem) return isolationProblem;
@@ -59,6 +76,8 @@ export class LeakFinder {
       steps: "a",
       target: failure.id,
       isolationVerified: true,
+      allIsolatedRepeatsVerified: true,
+      playwrightArgs: [...args],
       items: results.map(snapshotItem),
     };
     await this.store.save(state);
@@ -75,6 +94,7 @@ export class LeakFinder {
       locations: [target],
       passthroughArgs: args,
       quiet: true,
+      requireAllRepeats: true,
     });
     const alone = isolated.length === 1 ? isolated[0] : undefined;
     const verdict = alone?.id === target.id && alone.file === target.file && alone.line === target.line
@@ -122,10 +142,10 @@ export class LeakFinder {
     }
     const suspectCount = range.end - range.start;
 
-    if (state.isolationVerified !== true) {
+    if (state.allIsolatedRepeatsVerified !== true) {
       const isolationProblem = await this.verifyIsolation(items[targetIndex]!, args);
       if (isolationProblem) return isolationProblem;
-      state = { ...state, items, isolationVerified: true };
+      state = { ...state, items, isolationVerified: true, allIsolatedRepeatsVerified: true };
       await this.store.save(state);
     }
 

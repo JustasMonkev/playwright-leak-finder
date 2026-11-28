@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createProject, repoRoot, runCli } from "./e2e-helpers";
+import { command, createProject, repoRoot, runCli } from "./e2e-helpers";
 
 const fixtureRoot = path.join(repoRoot, "tests", "fixtures", "state-workflows");
 
@@ -12,7 +12,9 @@ const stateFile = (cwd: string): string => path.join(stateDirectory(cwd), "state
 const targetId = "scenario.spec.ts › target";
 const writerId = "scenario.spec.ts › writer";
 const singleLeakSnapshot = {
+  playwrightArgs: [],
   isolationVerified: true,
+  allIsolatedRepeatsVerified: true,
   steps: "a",
   target: targetId,
   items: [
@@ -37,12 +39,42 @@ describe("persisted state through real user workflows", () => {
     return JSON.parse(await readFile(stateFile(cwd), "utf8"));
   }
 
-  it("rechecks an unverified target before resuming an older search", { timeout: 120_000 }, async () => {
+  it("does not reuse project A's isolation result in project B", { timeout: 120_000 }, async () => {
+    const cwd = await createProject({
+      "playwright.config.cjs": "module.exports = { projects: [{ name: 'A' }, { name: 'B' }], outputDir: __dirname + '/test-results' };",
+      "scenario.spec.cjs": [
+        "const { test, expect } = require('@playwright/test');",
+        "let dirty = false;",
+        "test('writer', () => { dirty = true; });",
+        "test('target', ({}, info) => { expect(dirty || info.project.name === 'B').toBe(false); });",
+      ].join("\n"),
+    });
+
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    const before = await readFile(stateFile(cwd), "utf8");
+    const invalid = await runCli(cwd, "--project=A", "--workers=2");
+    expect(invalid.code).toBe(1);
+    expect(invalid.stderr).toContain("Cannot forward --workers=2");
+    expect(await readFile(stateFile(cwd), "utf8")).toBe(before);
+
+    const changed = await runCli(cwd, "--project=B", "--auto");
+    expect(changed.stdout).not.toContain("Leak found in:");
+    expect(changed.code).toBe(2);
+    expect(changed.stdout).toContain("forwarded Playwright arguments differ");
+    expect(await readFile(stateFile(cwd), "utf8")).toBe(before);
+    expect((await runCli(cwd, "--project=A")).stdout).toContain("Leak found in: scenario.spec.cjs › writer");
+    await runCli(cwd, "--reset");
+    const independent = await runCli(cwd, "--project=B");
+    expect(independent.code).toBe(2);
+    expect(independent.stdout).toContain("unexpected outcome on its own");
+  });
+
+  it.each([{}, { isolationVerified: true }])("rechecks legacy isolation without argument context: %j", { timeout: 120_000 }, async (legacy) => {
     const cwd = await project("single-leak.spec.ts");
     const spec = path.join(cwd, "scenario.spec.ts");
     const original = await readFile(spec, "utf8");
     await writeFile(spec, original.replace("expect(shared)", "test.skip(shared.length === 0); expect(shared)"));
-    const oldState = JSON.stringify({ steps: "a", target: targetId, items: singleLeakSnapshot.items });
+    const oldState = JSON.stringify({ ...legacy, steps: "a", target: targetId, items: singleLeakSnapshot.items });
     await mkdir(stateDirectory(cwd));
     await writeFile(stateFile(cwd), oldState);
 
@@ -52,6 +84,32 @@ describe("persisted state through real user workflows", () => {
     expect(replay.stdout).toContain("inconclusive");
     expect(replay.stdout).not.toContain("Leak found in:");
     expect(await readFile(stateFile(cwd), "utf8")).toBe(oldState);
+  });
+
+  it("does not discard project B's writer using a legacy partition from project A", { timeout: 120_000 }, async () => {
+    const cwd = await createProject({
+      "playwright.config.cjs": "module.exports = { projects: [{ name: 'A' }, { name: 'B' }] };",
+      "scenario.spec.cjs": [
+        "const { test, expect } = require('@playwright/test');",
+        "let dirty = false;",
+        "test('writer in B', ({}, info) => { dirty = info.project.name === 'B'; });",
+        "test('innocent one', () => {});",
+        "test('writer in A', ({}, info) => { if (info.project.name === 'A') dirty = true; });",
+        "test('innocent two', () => {});",
+        "test('target', () => { expect(dirty).toBe(false); });",
+      ].join("\n"),
+    });
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    expect((await runCli(cwd, "--project=A")).code).toBe(0);
+    const legacy = JSON.parse(await readFile(stateFile(cwd), "utf8"));
+    expect(legacy.steps).toBe("ba");
+    delete legacy.playwrightArgs;
+    await writeFile(stateFile(cwd), JSON.stringify(legacy));
+
+    const result = await runCli(cwd, "--auto", "--project=B");
+    expect(result.stdout).toContain("Leak found in: scenario.spec.cjs › writer in B");
+    expect(result.code).toBe(0);
+    expect(await savedState(cwd)).toMatchObject({ playwrightArgs: ["--project=B"] });
   });
 
   it("keeps status and reset truthful before, during, and after a search", { timeout: 120_000 }, async () => {
@@ -201,8 +259,36 @@ describe("persisted state through real user workflows", () => {
     const cwd = await project("single-leak.spec.ts");
     const [one, two] = await Promise.all([runCli(cwd), runCli(cwd)]);
 
-    expect(one.code).toBe(0);
-    expect(two.code).toBe(0);
+    expect(one.code, one.stdout + one.stderr).toBe(0);
+    expect(two.code, two.stdout + two.stderr).toBe(0);
+    expect(await savedState(cwd)).toEqual(singleLeakSnapshot);
+  });
+
+  it("reuses transforms across replays without sharing them with another CLI", { timeout: 120_000 }, async () => {
+    const cwd = await project("single-leak.spec.ts");
+    await writeFile(path.join(cwd, "playwright.config.ts"), 'export default { testDir: ".", outputDir: process.env.CACHE_LOG + ".artifacts" };');
+    await appendFile(path.join(cwd, "scenario.spec.ts"), String.raw`
+      import { appendFileSync } from "node:fs";
+      test.afterAll(() => {
+        const cache = process.env.PLAYWRIGHT_TRANSFORM_CACHE_DIR || process.env.PWTEST_CACHE_DIR || "shared";
+        appendFileSync(process.env.CACHE_LOG!, cache + "\n");
+      });
+    `);
+    const env = { ...process.env };
+    delete env.PLAYWRIGHT_TRANSFORM_CACHE_DIR;
+    delete env.PWTEST_CACHE_DIR;
+    const cli = path.join(repoRoot, "dist", "cli.mjs");
+    const logs = ["first.log", "second.log"].map(file => path.join(cwd, file));
+    const runs = await Promise.all(logs.map(log => command(process.execPath, [cli], cwd, { ...env, CACHE_LOG: log })));
+    for (const run of runs) expect(run.code, run.stdout + run.stderr).toBe(0);
+
+    const directories = await Promise.all(logs.map(async log => {
+      const steps = (await readFile(log, "utf8")).trimEnd().split("\n");
+      expect(steps).toEqual([steps[0], steps[0]]);
+      expect(existsSync(steps[0]!)).toBe(false);
+      return steps[0];
+    }));
+    expect(directories[0]).not.toBe(directories[1]);
     expect(await savedState(cwd)).toEqual(singleLeakSnapshot);
   });
 

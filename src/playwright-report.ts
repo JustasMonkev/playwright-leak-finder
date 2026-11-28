@@ -1,7 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { FullConfig, Reporter, Suite, TestCase } from "@playwright/test/reporter";
+import type { FullConfig, Reporter, Suite, TestCase, TestError } from "@playwright/test/reporter";
 import type { TestResult, TestStatus } from "./playwright";
+
+export interface RunReport {
+  projects: ProjectReport[];
+  firstError: string | null;
+}
 
 export interface ProjectReport {
   name: string;
@@ -18,6 +23,7 @@ const OUTCOME_STATUS: Record<ReturnType<TestCase["outcome"]>, TestStatus> = {
 
 export default class LeakFinderReporter implements Reporter {
   private rootDir = "";
+  private firstError: string | null = null;
   private mayRepeat = false;
   private collected: TestCase[] = [];
   private readonly started = new Set<TestCase>();
@@ -32,6 +38,10 @@ export default class LeakFinderReporter implements Reporter {
     this.started.add(test);
   }
 
+  onError(error: TestError): void {
+    this.firstError ??= error.message ?? error.value ?? null;
+  }
+
   printsToStdio(): boolean {
     return false;
   }
@@ -40,13 +50,17 @@ export default class LeakFinderReporter implements Reporter {
     // A Set retains first-start order. Tests that never started (all tests
     // during --list) follow in collection order.
     for (const test of this.collected) this.started.add(test);
-    const reports = this.buildProjectReports(this.started);
-    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify(reports));
+    const report: RunReport = {
+      projects: this.buildProjectReports(this.started),
+      firstError: this.firstError,
+    };
+    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify(report));
   }
 
   private buildProjectReports(tests: Set<TestCase>): ProjectReport[] {
     const reportsByProject = new Map<string, ProjectReport>();
     const repeats = this.mayRepeat ? new Map<string, TestResult>() : undefined;
+    const requireAllRepeats = process.env.PLAYWRIGHT_LEAK_FINDER_REQUIRE_ALL_REPEATS === "1";
     for (const test of tests) {
       const report = getOrCreateProjectReport(reportsByProject, test.parent.project()?.name ?? "");
       // A skipped test can still distinguish a scheduled project from a blocked one.
@@ -56,7 +70,7 @@ export default class LeakFinderReporter implements Reporter {
         const key = declarationKey(test);
         const previous = repeats.get(key);
         if (previous) {
-          previous.status = mergeRepeatedStatus(previous.status, result.status);
+          previous.status = mergeRepeatedStatus(previous.status, result.status, requireAllRepeats);
           continue;
         }
         repeats.set(key, result);
@@ -104,10 +118,11 @@ function declarationKey(test: TestCase): string {
   return JSON.stringify([test.titlePath(), file, line, column]);
 }
 
-function mergeRepeatedStatus(previous: TestStatus, next: TestStatus): TestStatus {
+function mergeRepeatedStatus(previous: TestStatus, next: TestStatus, requireAllRepeats: boolean): TestStatus {
+  if (previous === next) return previous;
   if (previous === "failed" || next === "failed") return "failed";
-  if (previous === "passed" || next === "passed") return "passed";
-  return "skipped";
+  // One repeat passed and another skipped. A positive isolation check needs both.
+  return requireAllRepeats ? "skipped" : "passed";
 }
 
 function formatTestId(file: string, test: TestCase): string {
