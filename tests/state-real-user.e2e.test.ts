@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
-import { cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { appendFile, cp, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { createProject, repoRoot, runCli } from "./e2e-helpers";
+import { command, createProject, repoRoot, runCli } from "./e2e-helpers";
 
 const fixtureRoot = path.join(repoRoot, "tests", "fixtures", "state-workflows");
 
@@ -253,8 +253,36 @@ describe("persisted state through real user workflows", () => {
     const cwd = await project("single-leak.spec.ts");
     const [one, two] = await Promise.all([runCli(cwd), runCli(cwd)]);
 
-    expect(one.code).toBe(0);
-    expect(two.code).toBe(0);
+    expect(one.code, one.stdout + one.stderr).toBe(0);
+    expect(two.code, two.stdout + two.stderr).toBe(0);
+    expect(await savedState(cwd)).toEqual(singleLeakSnapshot);
+  });
+
+  it("reuses transforms across replays without sharing them with another CLI", { timeout: 120_000 }, async () => {
+    const cwd = await project("single-leak.spec.ts");
+    await writeFile(path.join(cwd, "playwright.config.ts"), 'export default { testDir: ".", outputDir: process.env.CACHE_LOG + ".artifacts" };');
+    await appendFile(path.join(cwd, "scenario.spec.ts"), String.raw`
+      import { appendFileSync } from "node:fs";
+      test.afterAll(() => {
+        const cache = process.env.PLAYWRIGHT_TRANSFORM_CACHE_DIR || process.env.PWTEST_CACHE_DIR || "shared";
+        appendFileSync(process.env.CACHE_LOG!, cache + "\n");
+      });
+    `);
+    const env = { ...process.env };
+    delete env.PLAYWRIGHT_TRANSFORM_CACHE_DIR;
+    delete env.PWTEST_CACHE_DIR;
+    const cli = path.join(repoRoot, "dist", "cli.mjs");
+    const logs = ["first.log", "second.log"].map(file => path.join(cwd, file));
+    const runs = await Promise.all(logs.map(log => command(process.execPath, [cli], cwd, { ...env, CACHE_LOG: log })));
+    for (const run of runs) expect(run.code, run.stdout + run.stderr).toBe(0);
+
+    const directories = await Promise.all(logs.map(async log => {
+      const steps = (await readFile(log, "utf8")).trimEnd().split("\n");
+      expect(steps).toEqual([steps[0], steps[0]]);
+      expect(existsSync(steps[0]!)).toBe(false);
+      return steps[0];
+    }));
+    expect(directories[0]).not.toBe(directories[1]);
     expect(await savedState(cwd)).toEqual(singleLeakSnapshot);
   });
 });
