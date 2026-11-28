@@ -143,8 +143,8 @@ guessing:
 - **An unverified target.** The target must meet its Playwright expectation when run alone. If the
   location selects other tests, misses the target, or the target skips when
   run alone, the search is inconclusive. With `repeatEach`, every isolated
-  repeat must meet the expectation. Older saved searches verify this once
-  before resuming their existing partition.
+  repeat must meet the expectation. Older searches without this evidence
+  recheck isolation before replaying a partition.
 - **A replay that no longer matches the search.** Locations are selected by
   `file:line`. If a file edit, a shared line, or a change in execution order
   means the same tests no longer run in the original order, the step
@@ -161,14 +161,28 @@ guessing:
 | `-h`, `--help` | Show help |
 
 Everything else is forwarded to `playwright test`. Search progress is stored
-in `.playwright-leak-finder/state.json` (add it to your `.gitignore`).
+in `.playwright-leak-finder/state.json` (add it to your `.gitignore`). Resume with
+the same forwarded Playwright arguments, in the same order: a target passing
+alone under one project or config is not a baseline for another. If the
+arguments differ, the finder leaves the saved state untouched. Use `--reset`
+to switch searches. Older state files did not record these arguments. On the
+next run, the finder starts bisection over only if the suite still fails first
+at the saved target and that target passes alone; otherwise it leaves the file
+unchanged.
+
+Each CLI invocation uses its own temporary Playwright transform cache so
+concurrent searches cannot erase each other's TypeScript source maps. Steps
+within the invocation reuse that cache. If you set
+`PLAYWRIGHT_TRANSFORM_CACHE_DIR` or `PWTEST_CACHE_DIR`, the CLI leaves your
+cache configuration unchanged. Playwright's test artifact directories are
+unchanged as well.
 
 The exit code distinguishes the outcomes, so the CLI is scriptable:
 
 | Code | Meaning |
 | --- | --- |
 | 0 | A leak was found, or a step completed and the search can continue |
-| 1 | Error: bad arguments, or Playwright could not run |
+| 1 | Error: bad arguments, or Playwright could not run the search (for example, collection failed or global setup threw) |
 | 2 | The search finished without finding a leak |
 
 ## Programmatic API
