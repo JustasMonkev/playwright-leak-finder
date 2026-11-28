@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { HELP, parseCliArgs } from "./args";
 import { LeakFinder, type LeakFinderReport } from "./leak-finder";
 import { PlaywrightInterruptedError, PlaywrightRunner } from "./playwright";
@@ -25,8 +28,20 @@ async function main(): Promise<number> {
     case "status":
       await printStatus(store);
       return EXIT_CODE.OK;
-    case "run":
-      return runSearch(store, playwrightArgs, auto);
+    case "run": {
+      if (process.env.PLAYWRIGHT_TRANSFORM_CACHE_DIR || process.env.PWTEST_CACHE_DIR) {
+        return runSearch(store, playwrightArgs, auto);
+      }
+      // Concurrent cold transforms can remove a peer's source map and make
+      // Playwright report generated lines. Keep one warm cache for all replays.
+      const cache = await mkdtemp(path.join(tmpdir(), "playwright-leak-finder-transforms-"));
+      process.env.PWTEST_CACHE_DIR = cache;
+      try {
+        return await runSearch(store, playwrightArgs, auto);
+      } finally {
+        await rm(cache, { recursive: true, force: true });
+      }
+    }
   }
 }
 

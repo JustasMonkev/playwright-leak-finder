@@ -1,7 +1,12 @@
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { FullConfig, Reporter, Suite, TestCase } from "@playwright/test/reporter";
+import type { FullConfig, Reporter, Suite, TestCase, TestError } from "@playwright/test/reporter";
 import type { TestResult, TestStatus } from "./playwright";
+
+export interface RunReport {
+  projects: ProjectReport[];
+  firstError: string | null;
+}
 
 export interface ProjectReport {
   name: string;
@@ -18,6 +23,7 @@ const OUTCOME_STATUS: Record<ReturnType<TestCase["outcome"]>, TestStatus> = {
 
 export default class LeakFinderReporter implements Reporter {
   private rootDir = "";
+  private firstError: string | null = null;
   private mayRepeat = false;
   private collected: TestCase[] = [];
   private readonly started = new Set<TestCase>();
@@ -32,6 +38,10 @@ export default class LeakFinderReporter implements Reporter {
     this.started.add(test);
   }
 
+  onError(error: TestError): void {
+    this.firstError ??= error.message ?? error.value ?? null;
+  }
+
   printsToStdio(): boolean {
     return false;
   }
@@ -40,8 +50,11 @@ export default class LeakFinderReporter implements Reporter {
     // A Set retains first-start order. Tests that never started (all tests
     // during --list) follow in collection order.
     for (const test of this.collected) this.started.add(test);
-    const reports = this.buildProjectReports(this.started);
-    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify(reports));
+    const report: RunReport = {
+      projects: this.buildProjectReports(this.started),
+      firstError: this.firstError,
+    };
+    await writeFile(process.env.PLAYWRIGHT_LEAK_FINDER_REPORT!, JSON.stringify(report));
   }
 
   private buildProjectReports(tests: Set<TestCase>): ProjectReport[] {

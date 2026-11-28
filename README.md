@@ -161,12 +161,19 @@ guessing:
 Everything else is forwarded to `playwright test`. Search progress is stored
 in `.playwright-leak-finder/state.json` (add it to your `.gitignore`).
 
+Each CLI invocation uses its own temporary Playwright transform cache so
+concurrent searches cannot erase each other's TypeScript source maps. Steps
+within the invocation reuse that cache. If you set
+`PLAYWRIGHT_TRANSFORM_CACHE_DIR` or `PWTEST_CACHE_DIR`, the CLI leaves your
+cache configuration unchanged. Playwright's test artifact directories are
+unchanged as well.
+
 The exit code distinguishes the outcomes, so the CLI is scriptable:
 
 | Code | Meaning |
 | --- | --- |
 | 0 | A leak was found, or a step completed and the search can continue |
-| 1 | Error: bad arguments, or Playwright could not run |
+| 1 | Error: bad arguments, or Playwright could not run the search (for example, collection failed or global setup threw) |
 | 2 | The search finished without finding a leak |
 
 ## Programmatic API
